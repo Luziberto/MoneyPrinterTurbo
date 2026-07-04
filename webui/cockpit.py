@@ -64,6 +64,19 @@ def analyze_clip_materials(materials: list[Any] | None) -> dict[str, Any]:
         "sources": sources,
     }
 
+def assign_model_fields(model: Any, **values: Any) -> None:
+    """Set Pydantic fields when supported by the installed model version."""
+    fields = getattr(model.__class__, "model_fields", {})
+    for key, value in values.items():
+        if key in fields:
+            setattr(model, key, value)
+
+
+def model_supports_field(model: Any, field_name: str) -> bool:
+    fields = getattr(model.__class__, "model_fields", {})
+    return field_name in fields
+
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PIPELINE_DIR = ROOT_DIR / "pipeline"
 

@@ -809,7 +809,8 @@ with tab_create:
     params.match_materials_to_script = bool(
         st.session_state.get("match_materials_to_script", False)
     )
-    params.script_mode = st.session_state.get("script_mode", "auto")
+    script_mode = st.session_state.get("script_mode", "auto")
+    cockpit.assign_model_fields(params, script_mode=script_mode)
     uploaded_files = []
     uploaded_audio_file = None
 
@@ -881,7 +882,7 @@ with tab_create:
                 script_mode_values = [value for _, value in script_mode_options]
                 if saved_script_mode not in script_mode_values:
                     saved_script_mode = "auto"
-                params.script_mode = st.radio(
+                script_mode = st.radio(
                     tr("Script Mode"),
                     options=script_mode_values,
                     format_func=lambda value: next(
@@ -891,6 +892,7 @@ with tab_create:
                     horizontal=True,
                     key="script_mode",
                 )
+                cockpit.assign_model_fields(params, script_mode=script_mode)
 
             params.video_script = st.text_area(
                 tr("Video Script"), value=st.session_state["video_script"], height=280
@@ -907,7 +909,7 @@ with tab_create:
                 active_channel_config.get("scene_structure"),
                 tr,
             )
-            params.title_enabled = st.checkbox(
+            title_enabled = st.checkbox(
                 tr("Title Overlay Enabled"),
                 value=st.session_state.get(
                     "title_enabled",
@@ -915,8 +917,9 @@ with tab_create:
                 ),
                 key="title_enabled",
             )
-            if params.title_enabled:
-                params.title_text = st.text_input(
+            cockpit.assign_model_fields(params, title_enabled=title_enabled)
+            if title_enabled:
+                title_text = st.text_input(
                     tr("Title Overlay Text"),
                     value=st.session_state.get(
                         "title_text",
@@ -924,7 +927,7 @@ with tab_create:
                     ),
                     key="title_text",
                 ).strip()
-                params.title_duration = st.slider(
+                title_duration = st.slider(
                     tr("Title Overlay Duration"),
                     min_value=1.0,
                     max_value=8.0,
@@ -937,14 +940,19 @@ with tab_create:
                     step=0.5,
                     key="title_duration",
                 )
+                cockpit.assign_model_fields(
+                    params,
+                    title_text=title_text,
+                    title_duration=title_duration,
+                )
             else:
-                params.title_text = ""
+                cockpit.assign_model_fields(params, title_text="")
 
             if st.button(
                 tr("Generate Video Script and Keywords"), key="auto_generate_script"
             ):
                 with st.spinner(tr("Generating Video Script and Keywords")):
-                    if params.script_mode == "polish":
+                    if script_mode == "polish":
                         if not params.video_script.strip():
                             st.error(tr("Script Mode Polish Brief Required"))
                         else:
@@ -965,7 +973,7 @@ with tab_create:
                             else:
                                 st.session_state["video_script"] = script
                                 st.session_state["video_terms"] = ", ".join(terms)
-                    elif params.script_mode == "verbatim" and params.video_script.strip():
+                    elif script_mode == "verbatim" and params.video_script.strip():
                         script = params.video_script.strip()
                         terms = llm.generate_terms(
                             params.video_subject,

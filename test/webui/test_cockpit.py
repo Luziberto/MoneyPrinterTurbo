@@ -44,6 +44,18 @@ class TestCockpitHelpers(unittest.TestCase):
         self.assertEqual(diagnosis["unique_sources"], 2)
         self.assertEqual(diagnosis["warnings"], [])
 
+    def test_assign_model_fields_skips_unknown_fields(self):
+        class DummyModel:
+            model_fields = {"known": object()}
+
+            def __init__(self):
+                self.known = "old"
+
+        model = DummyModel()
+        cockpit.assign_model_fields(model, known="new", missing="ignored")
+        self.assertEqual(model.known, "new")
+        self.assertFalse(hasattr(model, "missing"))
+
     @patch.object(cockpit, "_ffmpeg_readiness", return_value=("Cockpit Status Ready", "ffmpeg"))
     @patch.object(cockpit, "_tts_readiness", return_value=("Cockpit Status Ready", "voice"))
     @patch.object(cockpit, "_llm_readiness", return_value=("Cockpit Status Ready", "openai"))
