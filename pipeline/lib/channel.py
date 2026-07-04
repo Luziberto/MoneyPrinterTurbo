@@ -55,6 +55,7 @@ CHANNEL_DEFAULTS: dict[str, Any] = {
     "category_overrides": {},
     "music_profile_overrides": {},
     "topic_distribution": {},
+    "match_materials_to_script": False,
 }
 
 
