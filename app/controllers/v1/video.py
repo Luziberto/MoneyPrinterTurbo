@@ -147,6 +147,9 @@ def create_task(
             "params": body.model_dump(),
         }
         sm.state.update_task(task_id)
+        logger.warning(f"SUBJECT={body.video_subject}")
+        logger.warning(f"VIDEO_TERMS={body.video_terms}")
+        logger.warning(f"VIDEO_SCRIPT={body.video_script[:100]}")
         task_manager.add_task(tm.start, task_id=task_id, params=body, stop_at=stop_at)
         logger.success(f"Task created: {utils.to_json(task)}")
         return utils.get_response(200, task)

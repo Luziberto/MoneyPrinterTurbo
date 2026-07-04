@@ -147,9 +147,23 @@ def load_config():
     return _config_
 
 
+_ELEVENLABS_APP_DEFAULTS = {
+    "elevenlabs_api_key": "",
+    "elevenlabs_model_id": "eleven_multilingual_v2",
+    "elevenlabs_fallback_voice_name": "pt-BR-AntonioNeural-Male",
+}
+
+
 def save_config():
+    # Merge keys edited manually in config.toml so WebUI saves do not wipe them.
+    disk_cfg = load_config()
+    merged_app = dict(_ELEVENLABS_APP_DEFAULTS)
+    merged_app.update(disk_cfg.get("app", {}))
+    merged_app.update(app)
+    app.clear()
+    app.update(merged_app)
     with open(config_file, "w", encoding="utf-8") as f:
-        _cfg["app"] = app
+        _cfg["app"] = merged_app
         _cfg["azure"] = azure
         _cfg["siliconflow"] = siliconflow
         _cfg["elevenlabs"] = elevenlabs

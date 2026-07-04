@@ -1,6 +1,9 @@
 x-common-volumes: &common-volumes
   - ./:/MoneyPrinterTurbo
 
+volumes:
+  collector_data:
+
 services:
   webui:
     build:
@@ -20,5 +23,16 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     command: [ "python3", "main.py" ]
-    volumes: *common-volumes
+    volumes:
+      - ./:/MoneyPrinterTurbo
+      - collector_data:/data/downloads:ro
     restart: always
+  # Optional: external Stock Video Collector service (replace image when available)
+  # collector:
+  #   image: <your-collector-image>
+  #   container_name: "stock-video-collector"
+  #   ports:
+  #     - "127.0.0.1:8090:8090"
+  #   volumes:
+  #     - collector_data:/data/downloads
+  #   restart: unless-stopped

@@ -1,5 +1,5 @@
 [app]
-video_source = "pexels" # "pexels" or "pixabay"
+video_source = "pexels" # pexels, pixabay, coverr, local, collector
 
 # 是否隐藏配置面板
 hide_config = false
@@ -72,6 +72,26 @@ twelvelabs_rerank_terms = false
 # Optional model overrides (defaults shown).
 # twelvelabs_marengo_model = "marengo3.0"
 # twelvelabs_pegasus_model = "pegasus1.5"
+
+# Stock Video Collector (external HTTP service + shared Docker volume)
+# The Collector returns local_path values rooted at collector_remote_dir.
+# MoneyPrinterTurbo reads the same files via collector_local_dir (may differ per container).
+collector_base_url = "http://collector:8090"
+collector_remote_dir = "/data/downloads"
+collector_local_dir = "/data/downloads"
+collector_search_limit = 20
+collector_timeout = 30
+collector_job_timeout_seconds = 300
+collector_poll_interval_seconds = 2
+collector_target_clips = 25
+collector_min_acceptable_clips = 20
+collector_min_screen_duration = 1.5
+collector_enable_legacy_fallback = false
+collector_fallback_source = "stock"
+
+# Local background music library grouped by profile.
+# Can also be overridden with environment variable BGM_PROFILE_MUSIC_DIR.
+bgm_profile_music_dir = "pipeline/assets/music"
 
 # 支持的提供商 (Supported providers):
 #   openai
@@ -233,6 +253,13 @@ mimo_model_name = "mimo-v2.5-pro"
 mimo_tts_model_name = "mimo-v2.5-tts"
 # Optional natural language style prompt for MiMo TTS.
 mimo_tts_style_prompt = "请用自然、清晰、适合短视频旁白的语气朗读。"
+
+########## ElevenLabs API Key
+# Optional premium TTS provider. Configure only in config.toml (not via WebUI).
+# Visit https://elevenlabs.io/app/settings/api-keys to get your API key.
+elevenlabs_api_key = ""
+elevenlabs_model_id = "eleven_multilingual_v2"
+elevenlabs_fallback_voice_name = "pt-BR-AntonioNeural-Male"
 
 ########## DeepSeek API Key
 # Visit https://platform.deepseek.com/api_keys to get your API key
@@ -397,10 +424,17 @@ api_key = ""
 model_id = "eleven_multilingual_v2"
 
 [ui]
-# UI related settings
+# UI related settings — sandbox for manual/ad-hoc video tests only.
+# Production editorial config lives in pipeline/channels/{slug}/ (channel.json + script_prompt.md).
 # 是否隐藏日志信息
 # Whether to hide logs in the UI
 hide_log = false
+
+# Script generation defaults (Advanced Script Settings) — optional WebUI overrides only.
+# paragraph_number = 1
+# use_custom_system_prompt = false
+# custom_system_prompt = ""
+# video_script_prompt = ""
 
 # 字幕位置设置 (Subtitle position settings)
 # 可选值 (Available values): "top", "center", "bottom", "custom"

@@ -23,6 +23,7 @@ from app.models.schema import (
     VideoParams,
     VideoTransitionMode,
 )
+from app.services import bgm as bgm_service
 from app.services import llm, voice
 from app.services import task as tm
 from app.utils import utils
@@ -890,6 +891,7 @@ with middle_panel:
             (tr("Random"), "random"),
         ]
         video_sources = [
+            (tr("Collector (local cache)"), "collector"),
             (tr("Pexels"), "pexels"),
             (tr("Pixabay"), "pixabay"),
             (tr("Coverr"), "coverr"),
@@ -899,9 +901,17 @@ with middle_panel:
             (tr("Xiaohongshu"), "xiaohongshu"),
         ]
 
-        saved_video_source_name = config.app.get("video_source", "pexels")
-        saved_video_source_index = [v[1] for v in video_sources].index(
-            saved_video_source_name
+        saved_video_source_name = config.ui.get(
+            "video_source",
+            config.app.get("video_source", "pexels"),
+        )
+        if saved_video_source_name == "stock":
+            saved_video_source_name = "pexels"
+        video_source_values = [v[1] for v in video_sources]
+        saved_video_source_index = (
+            video_source_values.index(saved_video_source_name)
+            if saved_video_source_name in video_source_values
+            else 0
         )
 
         selected_index = st.selectbox(
@@ -911,7 +921,7 @@ with middle_panel:
             index=saved_video_source_index,
         )
         params.video_source = video_sources[selected_index][1]
-        config.app["video_source"] = params.video_source
+        config.ui["video_source"] = params.video_source
 
         if params.video_source == "local":
             # Streamlit 的文件类型校验对扩展名大小写敏感，这里同时放行大小写两种形式。
@@ -1423,11 +1433,19 @@ with middle_panel:
         bgm_options = [
             (tr("No Background Music"), ""),
             (tr("Random Background Music"), "random"),
+            (tr("Random Background Music by Profile"), "profile_random"),
             (tr("Custom Background Music"), "custom"),
         ]
+        saved_bgm_type = config.ui.get("bgm_type", "random")
+        bgm_option_values = [option[1] for option in bgm_options]
+        saved_bgm_index = (
+            bgm_option_values.index(saved_bgm_type)
+            if saved_bgm_type in bgm_option_values
+            else 1
+        )
         selected_index = st.selectbox(
             tr("Background Music"),
-            index=1,
+            index=saved_bgm_index,
             options=range(
                 len(bgm_options)
             ),  # Use the index as the internal option value
@@ -1437,18 +1455,44 @@ with middle_panel:
         )
         # Get the selected background music type
         params.bgm_type = bgm_options[selected_index][1]
+        config.ui["bgm_type"] = params.bgm_type
 
         # Show or hide components based on the selection
+        params.bgm_file = ""
+        params.bgm_profile = config.ui.get("bgm_profile", "")
         if params.bgm_type == "custom":
             custom_bgm_file = st.text_input(
-                tr("Custom Background Music File"), key="custom_bgm_file_input"
+                tr("Custom Background Music File"),
+                value=config.ui.get("bgm_file", ""),
+                key="custom_bgm_file_input",
             )
+            config.ui["bgm_file"] = custom_bgm_file.strip()
             if custom_bgm_file:
                 # 这里不直接用 os.path.exists 判断，因为用户常见输入是
                 # output000.mp3，这个文件名需要由服务层映射到 resource/songs
                 # 目录后再校验。服务层会统一限制目录和文件类型，避免任意路径读取。
                 params.bgm_file = custom_bgm_file.strip()
-                # st.write(f":red[已选择自定义背景音乐]：**{custom_bgm_file}**")
+        elif params.bgm_type == "profile_random":
+            profiles = bgm_service.list_profiles()
+            if profiles:
+                saved_bgm_profile = config.ui.get("bgm_profile", "")
+                saved_profile_index = (
+                    profiles.index(saved_bgm_profile)
+                    if saved_bgm_profile in profiles
+                    else 0
+                )
+                params.bgm_profile = st.selectbox(
+                    tr("Background Music Profile"),
+                    profiles,
+                    index=saved_profile_index,
+                    key="bgm_profile_selector",
+                )
+                config.ui["bgm_profile"] = params.bgm_profile
+            else:
+                st.warning(tr("No background music profiles available"))
+                config.ui["bgm_profile"] = ""
+        elif params.bgm_type != "custom":
+            params.bgm_profile = ""
         params.bgm_volume = st.selectbox(
             tr("Background Music Volume"),
             options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
@@ -1680,10 +1724,22 @@ if start_button:
         scroll_to_bottom()
         st.stop()
 
-    if params.video_source not in ["pexels", "pixabay", "coverr", "local"]:
+    if params.video_source not in ["pexels", "pixabay", "coverr", "collector", "local"]:
         st.error(tr("Please Select a Valid Video Source"))
         scroll_to_bottom()
         st.stop()
+
+    if params.video_source == "collector":
+        if not (config.app.get("collector_base_url") or "").strip():
+            st.error(tr("Please configure the Collector base URL"))
+            scroll_to_bottom()
+            st.stop()
+        if not (config.app.get("collector_remote_dir") or "").strip() or not (
+            config.app.get("collector_local_dir") or ""
+        ).strip():
+            st.error(tr("Please configure Collector remote and local directories"))
+            scroll_to_bottom()
+            st.stop()
 
     if params.video_source == "pexels" and not config.app.get("pexels_api_keys", ""):
         st.error(tr("Please Enter the Pexels API Key"))

@@ -29,6 +29,24 @@ from app.utils import utils
 _DEFAULT_EDGE_TTS_TIMEOUT_SECONDS = 30.0
 _MIMO_DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 _MIMO_DEFAULT_TTS_MODEL = "mimo-v2.5-tts"
+_ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
+_ELEVENLABS_DEFAULT_MODEL = "eleven_multilingual_v2"
+_ELEVENLABS_DEFAULT_FALLBACK_VOICE = "pt-BR-AntonioNeural-Male"
+_ELEVENLABS_VOICES_CACHE_TTL_SECONDS = 300
+_elevenlabs_voices_cache: dict = {"expires_at": 0.0, "voices": []}
+_elevenlabs_voices_list_mode = "missing_key"
+_ELEVENLABS_PREMADE_VOICES = (
+    ("21m00Tcm4TlvDq8ikWAM", "Rachel"),
+    ("pNInz6obpgDQGcFmaJgB", "Adam"),
+    ("EXAVITQu4vr4xnSDxMaL", "Sarah"),
+    ("ErXwobaYiN019PkySvjV", "Antoni"),
+    ("TxGEqnHWrfWFTfGW9Hj6", "Josh"),
+    ("VR6AewLTigWG4xSOukaG", "Arnold"),
+    ("yoZ06aMxZJJ28mfd3POQ", "Sam"),
+    ("AZnzlk1XvdvUeBnXmlld", "Domi"),
+    ("MF3mGyEYCl7XYWbV9V6O", "Elli"),
+    ("GBv7mTt0atIp3Br8iCZE", "Thomas"),
+)
 NO_VOICE_NAME = "no-voice"
 # `none` 是 PR #981 里曾使用过的无配音标识。这里短期兼容这个值，避免
 # 已经手动调用过该分支的 API 用户升级后立即失效；WebUI 和新代码统一使用
@@ -139,54 +157,6 @@ def get_mimo_voices() -> list[str]:
     return [f"mimo:{voice}-{gender}" for voice, gender in voices_with_gender]
 
 
-def get_elevenlabs_voices(api_key: str) -> list[str]:
-    if not api_key:
-        return []
-    try:
-        url = "https://api.elevenlabs.io/v2/voices"
-        params = {"is_favorite": "true", "page_size": 100}
-        headers = {"xi-api-key": api_key}
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        if response.status_code != 200:
-            logger.warning(
-                f"ElevenLabs voices fetch failed with status {response.status_code}: {response.text}"
-            )
-            return []
-        data = response.json()
-        voices = data.get("voices", [])
-        return [
-            f"elevenlabs:{v['voice_id']}:{v['name']}"
-            for v in voices
-            if v.get("voice_id") and v.get("name") and v.get("status") != "disabled"
-        ]
-    except Exception as e:
-        logger.warning(f"ElevenLabs voices fetch failed: {str(e)}")
-        return []
-
-
-def get_chatterbox_voices() -> list[str]:
-    """Return the configured Chatterbox voices.
-
-    Chatterbox is self-hosted, so there is no global voice catalog. Operators
-    list the voice names exposed by their server via ``[chatterbox] voices``
-    (a TOML array, or a comma-separated string). Each entry is normalised to
-    the ``chatterbox:<name>`` format used by the TTS dispatcher.
-    """
-    voices = config.chatterbox.get("voices", []) or []
-    if isinstance(voices, str):
-        voices = [v.strip() for v in voices.split(",") if v.strip()]
-    result = []
-    for v in voices:
-        v = str(v).strip()
-        if not v:
-            continue
-        result.append(v if v.startswith("chatterbox:") else f"chatterbox:{v}")
-    if not result:
-        # keep the dropdown usable even before any voice is configured
-        result = ["chatterbox:default-Female"]
-    return result
-
-
 _AZURE_VOICES_DATA_FILE = os.path.join(
     os.path.dirname(__file__), "data", "azure_voices.json"
 )
@@ -249,11 +219,160 @@ def is_mimo_voice(voice_name: str):
 
 
 def is_elevenlabs_voice(voice_name: str) -> bool:
-    return (voice_name or "").startswith("elevenlabs:")
+    """Check if the voice slug belongs to ElevenLabs TTS."""
+    return str(voice_name or "").startswith("elevenlabs:")
 
 
 def is_chatterbox_voice(voice_name: str) -> bool:
     return (voice_name or "").startswith("chatterbox:")
+
+
+def get_chatterbox_voices() -> list[str]:
+    """Return configured Chatterbox voices from ``[chatterbox] voices``."""
+    voices = config.chatterbox.get("voices", []) or []
+    if isinstance(voices, str):
+        voices = [v.strip() for v in voices.split(",") if v.strip()]
+    result = []
+    for v in voices:
+        v = str(v).strip()
+        if not v:
+            continue
+        result.append(v if v.startswith("chatterbox:") else f"chatterbox:{v}")
+    if not result:
+        result = ["chatterbox:default-Female"]
+    return result
+
+
+def parse_elevenlabs_voice_id(voice_name: str) -> str:
+    """Extract voice_id from `elevenlabs:{voice_id}:{display_name}`."""
+    parts = str(voice_name or "").split(":", 2)
+    if len(parts) >= 2:
+        return parts[1].strip()
+    return ""
+
+
+def get_elevenlabs_fallback_voice() -> str:
+    return (
+        config.app.get("elevenlabs_fallback_voice_name", "")
+        or _ELEVENLABS_DEFAULT_FALLBACK_VOICE
+    )
+
+
+def _get_tls_verify() -> bool:
+    tls_verify = config.app.get("tls_verify", True)
+    if isinstance(tls_verify, str):
+        tls_verify = tls_verify.strip().lower() not in ("0", "false", "no", "off")
+    return bool(tls_verify)
+
+
+def _get_elevenlabs_api_key() -> str:
+    api_key = config.app.get("elevenlabs_api_key", "")
+    if isinstance(api_key, str):
+        api_key = api_key.strip()
+    if api_key:
+        return api_key
+
+    from app.config.config import load_config
+
+    disk_key = str(load_config().get("app", {}).get("elevenlabs_api_key", "")).strip()
+    if disk_key:
+        config.app["elevenlabs_api_key"] = disk_key
+    return disk_key
+
+
+def _is_elevenlabs_definitive_failure(status_code: int, response_text: str) -> bool:
+    if status_code in (401, 402, 403, 422, 429):
+        return True
+    lowered = (response_text or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "quota",
+            "credit",
+            "character_limit",
+            "insufficient",
+            "invalid_api_key",
+        )
+    )
+
+
+def get_elevenlabs_voices_list_mode() -> str:
+    """How the current ElevenLabs voice list was built: api, premade_fallback, missing_key."""
+    return _elevenlabs_voices_list_mode
+
+
+def _build_elevenlabs_premade_voices() -> list[str]:
+    return [f"elevenlabs:{voice_id}:{name}" for voice_id, name in _ELEVENLABS_PREMADE_VOICES]
+
+
+def get_elevenlabs_voices() -> list[str]:
+    """Fetch available voices from ElevenLabs API."""
+    global _elevenlabs_voices_list_mode
+
+    api_key = _get_elevenlabs_api_key()
+    if not api_key:
+        _elevenlabs_voices_list_mode = "missing_key"
+        logger.warning(
+            "configure elevenlabs_api_key in config.toml to list ElevenLabs voices"
+        )
+        return []
+
+    now = time.time()
+    if (
+        _elevenlabs_voices_cache["voices"]
+        and now < _elevenlabs_voices_cache["expires_at"]
+    ):
+        return list(_elevenlabs_voices_cache["voices"])
+
+    try:
+        response = requests.get(
+            f"{_ELEVENLABS_API_BASE}/voices",
+            headers={"xi-api-key": api_key},
+            proxies=config.proxy,
+            verify=_get_tls_verify(),
+            timeout=(10, 30),
+        )
+        if response.status_code != 200:
+            response_text = response.text or ""
+            logger.error(
+                f"failed to list ElevenLabs voices: HTTP {response.status_code}, "
+                f"body: {response_text[:300]}"
+            )
+            if response.status_code in (401, 403) and api_key:
+                voices = _build_elevenlabs_premade_voices()
+                _elevenlabs_voices_list_mode = "premade_fallback"
+                _elevenlabs_voices_cache["voices"] = voices
+                _elevenlabs_voices_cache["expires_at"] = (
+                    now + _ELEVENLABS_VOICES_CACHE_TTL_SECONDS
+                )
+                logger.warning(
+                    "ElevenLabs voices API unavailable; using premade voice fallback"
+                )
+                return list(voices)
+            _elevenlabs_voices_list_mode = "api_error"
+            return []
+
+        payload = response.json()
+        voices = []
+        for item in payload.get("voices", []):
+            voice_id = str(item.get("voice_id", "")).strip()
+            name = str(item.get("name", "")).strip() or voice_id
+            if voice_id:
+                voices.append(f"elevenlabs:{voice_id}:{name}")
+
+        voices.sort(key=lambda slug: slug.split(":", 2)[-1].lower())
+        _elevenlabs_voices_list_mode = "api"
+        _elevenlabs_voices_cache["voices"] = voices
+        _elevenlabs_voices_cache["expires_at"] = now + _ELEVENLABS_VOICES_CACHE_TTL_SECONDS
+        return list(voices)
+    except requests.Timeout:
+        logger.error("failed to list ElevenLabs voices: timeout")
+        _elevenlabs_voices_list_mode = "api_error"
+        return []
+    except Exception as exc:
+        logger.error(f"failed to list ElevenLabs voices: {exc}")
+        _elevenlabs_voices_list_mode = "api_error"
+        return []
 
 
 def is_no_voice(voice_name: str | None) -> bool:
@@ -417,16 +536,26 @@ def tts(
             logger.error(f"Invalid mimo voice name format: {voice_name}")
             return None
     elif is_elevenlabs_voice(voice_name):
-        # 格式: elevenlabs:{voice_id}:{name}
-        parts = voice_name.split(":")
-        if len(parts) >= 2:
-            voice_id = parts[1]
-            return elevenlabs_tts(text, voice_id, voice_file, voice_rate, voice_volume)
-        else:
+        voice_id = parse_elevenlabs_voice_id(voice_name)
+        fallback_voice = get_elevenlabs_fallback_voice()
+        if not voice_id:
             logger.error(f"Invalid elevenlabs voice name format: {voice_name}")
-            return None
+            logger.warning(
+                f"ElevenLabs failed (invalid voice), falling back to Edge TTS: {fallback_voice}"
+            )
+            return azure_tts_v1(text, fallback_voice, voice_rate, voice_file)
+
+        result = elevenlabs_tts(
+            text, voice_id, voice_rate, voice_file, voice_volume
+        )
+        if result is not None:
+            return result
+
+        logger.warning(
+            f"ElevenLabs failed, falling back to Edge TTS: {fallback_voice}"
+        )
+        return azure_tts_v1(text, fallback_voice, voice_rate, voice_file)
     elif is_chatterbox_voice(voice_name):
-        # 格式: chatterbox:<voice>，voice 可带显示用的 -Female/-Male 后缀
         parts = voice_name.split(":", 1)
         if len(parts) >= 2 and parts[1].strip():
             chatterbox_voice = parts[1].strip()
@@ -435,9 +564,8 @@ def tts(
             return chatterbox_tts(
                 text, chatterbox_voice, voice_file, voice_rate, voice_volume
             )
-        else:
-            logger.error(f"Invalid chatterbox voice name format: {voice_name}")
-            return None
+        logger.error(f"Invalid chatterbox voice name format: {voice_name}")
+        return None
     return azure_tts_v1(text, voice_name, voice_rate, voice_file)
 
 
@@ -446,15 +574,6 @@ def convert_rate_to_percent(rate: float) -> str:
     # Rounding can yield 0 for rates near but not equal to 1.0 (e.g. 1.004,
     # 0.997); those must still be returned as "+0%", not the unsigned "0%"
     # which edge-tts rejects with ValueError: Invalid rate '0%'.
-    # API 或批处理调用可能传入 0、0.0、None 或无法转换的空值；这些值不代表
-    # 合法语速，直接计算会变成 -100% 或抛异常。这里统一回退到正常语速，
-    # 避免生成极慢音频或让 TTS 流程在边界输入下失败。
-    try:
-        rate = float(rate)
-    except (TypeError, ValueError):
-        rate = 1.0
-    if rate <= 0:
-        rate = 1.0
     percent = round((rate - 1.0) * 100)
     if percent >= 0:
         return f"+{percent}%"
@@ -1232,28 +1351,35 @@ def mimo_tts(
 def elevenlabs_tts(
     text: str,
     voice_id: str,
+    voice_rate: float,
     voice_file: str,
-    voice_rate: float = 1.0,
     voice_volume: float = 1.0,
-    model_id: str = "",
 ) -> Union[SubMaker, None]:
+    """Synthesize speech with ElevenLabs REST API."""
+    from pydub import AudioSegment
+
     text = (text or "").strip()
     if not text:
         logger.error("ElevenLabs TTS text is empty")
         return None
 
-    api_key = config.elevenlabs.get("api_key", "")
+    api_key = _get_elevenlabs_api_key()
     if not api_key:
         logger.error("ElevenLabs API key is not set")
         return None
 
-    if not model_id:
-        model_id = config.elevenlabs.get("model_id", "eleven_multilingual_v2")
+    model_id = (
+        config.app.get("elevenlabs_model_id", "") or _ELEVENLABS_DEFAULT_MODEL
+    )
+    speed = max(0.7, min(1.2, float(voice_rate or 1.0)))
+    _configure_pydub_ffmpeg(AudioSegment)
+    ensure_file_path_exists(voice_file)
 
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    url = f"{_ELEVENLABS_API_BASE}/text-to-speech/{voice_id}"
     headers = {
         "xi-api-key": api_key,
         "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
     }
     payload = {
         "text": text,
@@ -1261,59 +1387,72 @@ def elevenlabs_tts(
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.75,
-            "style": 0.0,
-            "use_speaker_boost": True,
+            "speed": speed,
         },
     }
 
-    # Errors where retrying will never help (auth/access/validation failures).
-    _NON_RETRYABLE_CODES = {401, 403, 422}
-    _NON_RETRYABLE_STATUSES = {"voice_disabled", "voice_access_denied", "unauthorized"}
-
-    for i in range(3):
+    for attempt in range(3):
         try:
-            logger.info(f"start elevenlabs tts, voice_id: {voice_id}, try: {i + 1}")
-            ensure_file_path_exists(voice_file)
-
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
-            if response.status_code != 200:
-                error_status = ""
-                try:
-                    detail = response.json().get("detail", {})
-                    if isinstance(detail, dict):
-                        error_status = detail.get("status", "")
-                except Exception:
-                    pass
-
-                if response.status_code in _NON_RETRYABLE_CODES or error_status in _NON_RETRYABLE_STATUSES:
-                    logger.error(
-                        f"ElevenLabs TTS failed (non-retryable) — voice_id: {voice_id}, "
-                        f"status: {response.status_code}, error: {error_status or response.text[:200]}. "
-                        "Please select a different ElevenLabs voice."
-                    )
-                    return None
-
-                logger.error(
-                    f"elevenlabs tts failed with status {response.status_code}: {response.text[:200]}"
-                )
-                continue
-
-            with open(voice_file, "wb") as f:
-                f.write(response.content)
-
-            audio_clip = AudioFileClip(voice_file)
-            audio_duration = audio_clip.duration
-            audio_clip.close()
-
-            sub_maker = ensure_legacy_submaker_fields(SubMaker())
-            logger.success(f"elevenlabs tts succeeded: {voice_file}")
-            return populate_legacy_submaker_with_full_text(
-                sub_maker=sub_maker,
-                text=text,
-                audio_duration_seconds=audio_duration,
+            logger.info(
+                f"start elevenlabs tts, voice_id: {voice_id}, model: {model_id}, try: {attempt + 1}"
             )
-        except Exception as e:
-            logger.error(f"elevenlabs tts failed: {str(e)}")
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                proxies=config.proxy,
+                verify=_get_tls_verify(),
+                timeout=(10, 120),
+            )
+
+            if response.status_code == 200:
+                audio_bytes = response.content
+                if not audio_bytes:
+                    raise ValueError("ElevenLabs returned empty audio")
+
+                output_format = utils.parse_extension(voice_file) or "mp3"
+                if output_format == "mp3":
+                    with open(voice_file, "wb") as audio_file:
+                        audio_file.write(audio_bytes)
+                    audio_segment = AudioSegment.from_file(
+                        io.BytesIO(audio_bytes), format="mp3"
+                    )
+                else:
+                    audio_segment = AudioSegment.from_file(
+                        io.BytesIO(audio_bytes), format="mp3"
+                    )
+                    if voice_volume != 1.0:
+                        gain_db = 20 * math.log10(max(voice_volume, 0.01))
+                        audio_segment = audio_segment.apply_gain(gain_db - 0)
+                    audio_segment.export(voice_file, format=output_format)
+
+                audio_duration = len(audio_segment) / 1000.0
+                sub_maker = ensure_legacy_submaker_fields(SubMaker())
+                logger.success(f"elevenlabs tts succeeded: {voice_file}")
+                return populate_legacy_submaker_with_full_text(
+                    sub_maker=sub_maker,
+                    text=text,
+                    audio_duration_seconds=audio_duration,
+                )
+
+            response_text = response.text or ""
+            if _is_elevenlabs_definitive_failure(
+                response.status_code, response_text
+            ):
+                logger.error(
+                    f"elevenlabs tts failed definitively: HTTP {response.status_code}, "
+                    f"body: {response_text[:300]}"
+                )
+                return None
+
+            logger.error(
+                f"elevenlabs tts transient failure: HTTP {response.status_code}, "
+                f"body: {response_text[:300]}"
+            )
+        except requests.Timeout:
+            logger.error(f"elevenlabs tts timeout, try: {attempt + 1}")
+        except Exception as exc:
+            logger.error(f"elevenlabs tts failed: {exc}")
 
     return None
 
@@ -1326,19 +1465,7 @@ def chatterbox_tts(
     voice_volume: float = 1.0,
     model_id: str = "",
 ) -> Union[SubMaker, None]:
-    """Generate speech with a self-hosted Chatterbox TTS server.
-
-    Chatterbox (Resemble AI, MIT) is an open-source, locally hosted TTS model
-    with zero-shot voice cloning — a self-hostable alternative to ElevenLabs.
-    This talks to an OpenAI-compatible ``/audio/speech`` endpoint, so it works
-    with the common community servers (e.g. devnen/Chatterbox-TTS-Server,
-    travisvn/chatterbox-tts-api). Configure ``[chatterbox] base_url`` (and an
-    optional ``api_key``).
-
-    Like ElevenLabs, Chatterbox does not return word-level timestamps, so the
-    subtitle path falls back to the full-text SubMaker. For tighter subtitle
-    sync set ``subtitle_provider = "whisper"``.
-    """
+    """Generate speech with a self-hosted Chatterbox TTS server."""
     text = (text or "").strip()
     if not text:
         logger.error("Chatterbox TTS text is empty")
@@ -1364,14 +1491,8 @@ def chatterbox_tts(
         "input": text,
         "voice": voice,
         "response_format": "mp3",
-        # OpenAI speech API accepts speed 0.25-4.0; MoneyPrinterTurbo's rate is a
-        # 1.0-centred multiplier, so it maps directly (clamped to the valid range).
         "speed": max(0.25, min(4.0, float(voice_rate or 1.0))),
     }
-    # voice_volume is accepted for parity with the other TTS providers but is
-    # intentionally not sent: the OpenAI /audio/speech contract has no volume
-    # field, so Chatterbox servers ignore it. Adjust loudness via voice_rate
-    # (speed) or in post-processing instead.
 
     for i in range(3):
         try:

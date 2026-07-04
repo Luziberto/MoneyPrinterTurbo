@@ -59,8 +59,11 @@
     "Background Music": "Фоновая музыка",
     "No Background Music": "Без фоновой музыки",
     "Random Background Music": "Случайная фоновая музыка",
+    "Random Background Music by Profile": "Случайная фоновая музыка по профилю",
     "Custom Background Music": "Своя фоновая музыка",
     "Custom Background Music File": "Введите путь к файлу фоновой музыки:",
+    "Background Music Profile": "Профиль фоновой музыки",
+    "No background music profiles available": "Нет доступных профилей фоновой музыки",
     "Background Music Volume": "Громкость фоновой музыки (0.2 = 20%; не делайте ее слишком громкой)",
     "Subtitle Settings": "**Настройки субтитров**",
     "Enable Subtitles": "Показывать субтитры (если выключить, настройки ниже не применяются)",
@@ -168,6 +171,10 @@
     "Custom Position (% from top)": "Пользовательское положение (% от верхнего края)",
     "Please enter a value between 0 and 100": "Введите значение от 0 до 100",
     "Please enter a valid number": "Введите корректное число",
+    "Stock (Pexels + Pixabay + Coverr)": "Сток (Pexels + Pixabay + Coverr)",
+    "Collector (local cache)": "Collector (локальный кэш)",
+    "Please configure the Collector base URL": "Укажите collector_base_url в [app] в config.toml.",
+    "Please configure Collector remote and local directories": "Укажите collector_remote_dir и collector_local_dir в [app] в config.toml.",
     "Please Select a Valid Video Source": "Выберите поддерживаемый источник материалов"
   }
 }

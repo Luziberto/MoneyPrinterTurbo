@@ -6,11 +6,9 @@ import random
 import gc
 import shutil
 import subprocess
-import sys
-import tempfile
 from contextlib import redirect_stdout
 from functools import lru_cache
-from typing import List
+from typing import List, Union
 from loguru import logger
 import numpy as np
 from moviepy import (
@@ -29,12 +27,14 @@ from PIL import Image, ImageDraw, ImageFont
 from app.config import config
 from app.models import const
 from app.models.schema import (
+    CollectorSelectedClip,
     MaterialInfo,
     VideoAspect,
     VideoConcatMode,
     VideoParams,
     VideoTransitionMode,
 )
+from app.services import bgm as bgm_service
 from app.services.utils import video_effects
 from app.utils import file_security, utils
 
@@ -70,10 +70,8 @@ audio_codec = "aac"
 audio_bitrate = "192k"
 fps = 30
 # FFmpeg 按帧率拼接/转码时，最终时长可能比 MoviePy 读到的理论时长短几十毫秒。
-# 这里给视频素材多留一个很小的安全余量，避免音频末尾因为帧舍入出现黑屏、
-# 卡顿或最后一小段旁白没有画面的情况。
+# 这里给视频素材多留一个很小的安全余量，避免音频末尾因为帧舍入出现黑屏。
 _VIDEO_DURATION_SAFETY_MARGIN = 0.1
-_BGM_EXTENSIONS = (".mp3",)
 _DEFAULT_VIDEO_CODEC = "libx264"
 _SUPPORTED_VIDEO_CODECS = (
     "libx264",
@@ -87,13 +85,7 @@ _runtime_disabled_video_codecs = set()
 
 
 def _get_required_video_duration(audio_duration: float) -> float:
-    """
-    返回视频素材拼接的目标时长。
-
-    使用场景：合成视频时需要素材时长覆盖旁白音频。只做到“刚好等于”
-    音频时长时，FFmpeg 可能因为帧率舍入让最终视频略短，因此统一加一个
-    轻量余量。函数独立出来，便于测试和后续按实际反馈调整余量大小。
-    """
+    """Return target clip duration with a small safety margin for FFmpeg rounding."""
     return max(0.0, float(audio_duration) + _VIDEO_DURATION_SAFETY_MARGIN)
 
 
@@ -138,6 +130,109 @@ def _prioritize_unique_source_clips(
         f"fallback clips: {len(overflow_items)}"
     )
     return primary_items + overflow_items
+
+
+def _coerce_collector_selected_clip(
+    item: str | dict | CollectorSelectedClip,
+) -> CollectorSelectedClip | None:
+    if isinstance(item, CollectorSelectedClip):
+        return item
+    if isinstance(item, dict):
+        try:
+            return CollectorSelectedClip(**item)
+        except Exception:
+            return None
+    return None
+
+
+def _is_structured_clip_sequence(
+    video_inputs: List[str] | List[CollectorSelectedClip] | List[dict],
+) -> bool:
+    return bool(video_inputs) and all(
+        _coerce_collector_selected_clip(item) is not None for item in video_inputs
+    )
+
+
+def _collector_min_screen_duration() -> float:
+    try:
+        return max(0.5, float(config.app.get("collector_min_screen_duration", 1.5)))
+    except (TypeError, ValueError):
+        return 1.5
+
+
+def _resolve_structured_clip_duration(
+    collector_clip: CollectorSelectedClip,
+    asset_duration: float,
+    max_clip_duration: int,
+) -> float:
+    clip_cap = max(float(max_clip_duration or 0), 0.5)
+    upper_bound = min(clip_cap, asset_duration) if asset_duration > 0 else clip_cap
+    if upper_bound <= 0:
+        return 0.0
+
+    lower_bound = min(_collector_min_screen_duration(), upper_bound)
+    if (
+        collector_clip.recommended_clip_duration is not None
+        and collector_clip.recommended_clip_duration > 0
+    ):
+        target_duration = float(collector_clip.recommended_clip_duration)
+    else:
+        score_components = [
+            value
+            for value in (
+                collector_clip.score,
+                collector_clip.retrieval_score,
+                collector_clip.visual_score,
+            )
+            if value is not None
+        ]
+        normalized_score = (
+            max(0.0, min(1.0, sum(score_components) / len(score_components)))
+            if score_components
+            else 0.5
+        )
+        target_duration = lower_bound + normalized_score * (upper_bound - lower_bound)
+
+    return max(lower_bound, min(target_duration, upper_bound))
+
+
+def _build_structured_subclipped_items(
+    video_inputs: List[CollectorSelectedClip] | List[dict],
+    max_clip_duration: int,
+) -> List[SubClippedVideoClip]:
+    subclipped_items: List[SubClippedVideoClip] = []
+    for raw_item in video_inputs:
+        collector_clip = _coerce_collector_selected_clip(raw_item)
+        if collector_clip is None or not collector_clip.path:
+            continue
+
+        clip = _open_video_clip_quietly(collector_clip.path)
+        try:
+            clip_duration = clip.duration
+            clip_w, clip_h = clip.size
+        finally:
+            close_clip(clip)
+
+        target_duration = _resolve_structured_clip_duration(
+            collector_clip=collector_clip,
+            asset_duration=clip_duration,
+            max_clip_duration=max_clip_duration,
+        )
+        if target_duration <= 0:
+            continue
+
+        subclipped_items.append(
+            SubClippedVideoClip(
+                file_path=collector_clip.path,
+                start_time=0,
+                end_time=target_duration,
+                width=collector_clip.width or clip_w,
+                height=collector_clip.height or clip_h,
+                duration=target_duration,
+                source_file_path=collector_clip.path,
+            )
+        )
+    return subclipped_items
 
 
 def get_ffmpeg_binary():
@@ -240,24 +335,6 @@ def _disable_runtime_video_codec(codec: str, reason: str):
         f"video codec {codec} failed, fallback to {_DEFAULT_VIDEO_CODEC}. "
         f"reason: {reason}"
     )
-
-
-def _get_temp_audio_dir(output_dir: str) -> str:
-    """
-    Return the directory to use for MoviePy's temporary audio file.
-
-    On Windows, Windows Defender can lock files written to the task output
-    directory while scanning them, causing MoviePy to fail with a
-    PermissionError (WinError 32) on the TEMP_MPY_wvf_snd temp file and
-    leaving the final MP4 at 0 bytes.  Using the system temp directory
-    sidesteps the scan without changing behaviour on other platforms.
-
-    On Linux/macOS/Docker the output directory is returned unchanged so
-    existing behaviour is preserved.
-    """
-    if sys.platform == "win32":
-        return tempfile.gettempdir()
-    return output_dir
 
 
 def _fallback_write_videofile(clip, output_file: str, failed_codec: str, reason: str, **kwargs):
@@ -475,66 +552,39 @@ def delete_files(files: List[str] | str):
             logger.debug(f"failed to delete file {file}: {str(e)}")
 
 
+def _bgm_allowed_directories() -> list[str]:
+    return bgm_service.allowed_bgm_directories()
+
+
 def _resolve_bgm_file_path(song_dir: str, bgm_file: str) -> str:
-    # 背景音乐只允许读取 resource/songs 目录内的文件，避免用户输入任意路径后
-    # 被 MoviePy 打开。这里兼容两种常见输入：
-    # 1. output000.mp3：来自 BGM 列表或用户只填写文件名
-    # 2. ./resource/songs/output000.mp3：用户按项目目录结构填写的相对路径
-    # 两种写法最终都会再次通过 resource/songs 白名单校验，不能绕过目录限制。
-    try:
-        return file_security.resolve_path_within_directory(song_dir, bgm_file)
-    except ValueError as song_dir_exc:
-        if os.path.isabs(bgm_file):
-            raise song_dir_exc
-
-        project_relative_file = os.path.join(utils.root_dir(), bgm_file)
-        try:
-            return file_security.resolve_path_within_directory(
-                song_dir, project_relative_file
-            )
-        except ValueError as root_dir_exc:
-            raise ValueError(str(root_dir_exc)) from song_dir_exc
+    del song_dir  # compatibility wrapper; resolution is centralized in bgm_service
+    # 背景音乐只允许读取白名单目录内的文件，避免用户输入任意路径后被 MoviePy 打开。
+    # 兼容输入：
+    # 1. output000.mp3（resource/songs）
+    # 2. ./resource/songs/output000.mp3
+    # 3. <BGM_PROFILE_MUSIC_DIR>/lofi/lofi_001.mp3
+    # 4. lofi/lofi_001.mp3（相对 profile music dir）
+    resolved = bgm_service.resolve_bgm(bgm_type="custom", bgm_file=bgm_file)
+    if not resolved:
+        raise ValueError("file does not exist")
+    return resolved
 
 
-def get_bgm_file(bgm_type: str = "random", bgm_file: str = ""):
-    if not bgm_type:
-        return ""
-
-    if bgm_file:
-        song_dir = utils.song_dir()
-        try:
-            resolved_bgm_file = _resolve_bgm_file_path(song_dir, bgm_file)
-        except ValueError as exc:
-            # API 请求里的 bgm_file 来自用户输入，不能直接把任意绝对路径交给
-            # MoviePy 打开。这里强制限制到 resource/songs 目录，阻止读取
-            # /etc/passwd、配置文件、密钥等非背景音乐文件。
-            logger.warning(
-                f"reject unsafe bgm file: {bgm_file}, song_dir: {song_dir}, error: {str(exc)}"
-            )
-            return ""
-
-        if not resolved_bgm_file.lower().endswith(_BGM_EXTENSIONS):
-            logger.warning(f"reject unsupported bgm file extension: {resolved_bgm_file}")
-            return ""
-
-        return resolved_bgm_file
-
-    if bgm_type == "random":
-        suffix = "*.mp3"
-        song_dir = utils.song_dir()
-        files = glob.glob(os.path.join(song_dir, suffix))
-        # 当背景音乐目录为空时，直接回退为“不使用 BGM”，避免 random.choice([]) 抛异常。
-        if not files:
-            logger.warning(f"no bgm files found in song directory: {song_dir}")
-            return ""
-        return random.choice(files)
-
-    return ""
+def get_bgm_file(
+    bgm_type: str = "random",
+    bgm_file: str = "",
+    bgm_profile: str = "",
+):
+    return bgm_service.resolve_bgm(
+        bgm_type=bgm_type,
+        bgm_file=bgm_file,
+        bgm_profile=bgm_profile,
+    )
 
 
 def combine_videos(
     combined_video_path: str,
-    video_paths: List[str],
+    video_paths: List[str] | List[CollectorSelectedClip] | List[dict],
     audio_file: str,
     video_aspect: VideoAspect = VideoAspect.portrait,
     video_concat_mode: VideoConcatMode = VideoConcatMode.random,
@@ -551,11 +601,6 @@ def combine_videos(
         close_clip(audio_clip)
     logger.info(f"audio duration: {audio_duration} seconds")
     logger.info(f"maximum clip duration: {max_clip_duration} seconds")
-    required_video_duration = _get_required_video_duration(audio_duration)
-    logger.info(
-        f"required video duration: {required_video_duration:.2f} seconds "
-        f"(audio duration + {_VIDEO_DURATION_SAFETY_MARGIN:.2f}s safety margin)"
-    )
 
     # 兼容 API 直接调用时未传转场模式的情况，避免后续访问 .value 时崩溃。
     transition_value = getattr(video_transition_mode, "value", video_transition_mode)
@@ -565,55 +610,65 @@ def combine_videos(
     video_width, video_height = aspect.to_resolution()
 
     processed_clips = []
-    subclipped_items = []
     video_duration = 0
-    for video_path in video_paths:
-        clip = _open_video_clip_quietly(video_path)
-        clip_duration = clip.duration
-        clip_w, clip_h = clip.size
-        close_clip(clip)
-        
-        start_time = 0
+    concat_mode_value = getattr(video_concat_mode, "value", video_concat_mode)
+    if _is_structured_clip_sequence(video_paths):
+        subclipped_items = _build_structured_subclipped_items(
+            video_inputs=video_paths,
+            max_clip_duration=max_clip_duration,
+        )
+        logger.info(
+            f"using {len(subclipped_items)} structured collector clips for rendering"
+        )
+    else:
+        subclipped_items = []
+        for video_path in video_paths:
+            clip = _open_video_clip_quietly(video_path)
+            clip_duration = clip.duration
+            clip_w, clip_h = clip.size
+            close_clip(clip)
 
-        while start_time < clip_duration:
-            end_time = min(start_time + max_clip_duration, clip_duration)
+            start_time = 0
 
-            # 保留所有有效分段。
-            # 这样既不会丢掉“整段视频本身就短于 max_clip_duration”的素材，
-            # 也不会吞掉长视频最后剩下的一小段尾部内容。
-            if end_time > start_time:
-                subclipped_items.append(
-                    SubClippedVideoClip(
-                        file_path=video_path,
-                        start_time=start_time,
-                        end_time=end_time,
-                        width=clip_w,
-                        height=clip_h,
-                        source_file_path=video_path,
+            while start_time < clip_duration:
+                end_time = min(start_time + max_clip_duration, clip_duration)
+
+                # 保留所有有效分段。
+                # 这样既不会丢掉“整段视频本身就短于 max_clip_duration”的素材，
+                # 也不会吞掉长视频最后剩下的一小段尾部内容。
+                if end_time > start_time:
+                    subclipped_items.append(
+                        SubClippedVideoClip(
+                            file_path=video_path,
+                            start_time=start_time,
+                            end_time=end_time,
+                            width=clip_w,
+                            height=clip_h,
+                            source_file_path=video_path,
+                        )
                     )
-                )
 
-            start_time = end_time
-            if video_concat_mode.value == VideoConcatMode.sequential.value:
-                break
+                start_time = end_time
+                if concat_mode_value == VideoConcatMode.sequential.value:
+                    break
 
-    subclipped_items = _prioritize_unique_source_clips(
-        subclipped_items=subclipped_items,
-        concat_mode=video_concat_mode,
-    )
+        subclipped_items = _prioritize_unique_source_clips(
+            subclipped_items=subclipped_items,
+            concat_mode=video_concat_mode,
+        )
         
     logger.debug(f"total subclipped items: {len(subclipped_items)}")
     
     # Add downloaded clips over and over until the duration of the audio (max_duration) has been reached
     for i, subclipped_item in enumerate(subclipped_items):
-        if video_duration >= required_video_duration:
+        if video_duration >= audio_duration:
             break
         
         logger.debug(
             f"processing clip {i+1}: {subclipped_item.width}x{subclipped_item.height}, "
             f"source: {os.path.basename(subclipped_item.source_file_path)}, "
             f"current duration: {video_duration:.2f}s, "
-            f"remaining: {required_video_duration - video_duration:.2f}s"
+            f"remaining: {audio_duration - video_duration:.2f}s"
         )
         
         try:
@@ -631,17 +686,27 @@ def combine_videos(
                 if clip_ratio == video_ratio:
                     clip = clip.resized(new_size=(video_width, video_height))
                 else:
+                    # cover mode: resize until the whole target frame is covered
                     if clip_ratio > video_ratio:
-                        scale_factor = video_width / clip_w
-                    else:
                         scale_factor = video_height / clip_h
+                    else:
+                        scale_factor = video_width / clip_w
 
                     new_width = int(clip_w * scale_factor)
                     new_height = int(clip_h * scale_factor)
 
-                    background = ColorClip(size=(video_width, video_height), color=(0, 0, 0)).with_duration(clip_duration)
-                    clip_resized = clip.resized(new_size=(new_width, new_height)).with_position("center")
-                    clip = CompositeVideoClip([background, clip_resized])
+                    clip = clip.resized(new_size=(new_width, new_height))
+
+                    # center crop to target size
+                    x_center = new_width / 2
+                    y_center = new_height / 2
+
+                    clip = clip.cropped(
+                        x_center=x_center,
+                        y_center=y_center,
+                        width=video_width,
+                        height=video_height,
+                    )
                     
             shuffle_side = random.choice(["left", "right", "top", "bottom"])
             if transition_value in (None, VideoTransitionMode.none.value):
@@ -695,23 +760,16 @@ def combine_videos(
         except Exception as e:
             logger.error(f"failed to process clip: {str(e)}")
     
-    # loop processed clips until the video duration covers the audio duration and the small safety margin.
-    if video_duration < required_video_duration:
-        logger.warning(
-            f"video duration ({video_duration:.2f}s) is shorter than required duration "
-            f"({required_video_duration:.2f}s), looping clips to match audio length."
-        )
+    # loop processed clips until the video duration matches or exceeds the audio duration.
+    if video_duration < audio_duration:
+        logger.warning(f"video duration ({video_duration:.2f}s) is shorter than audio duration ({audio_duration:.2f}s), looping clips to match audio length.")
         base_clips = processed_clips.copy()
         for clip in itertools.cycle(base_clips):
-            if video_duration >= required_video_duration:
+            if video_duration >= audio_duration:
                 break
             processed_clips.append(clip)
             video_duration += clip.duration
-        logger.info(
-            f"video duration: {video_duration:.2f}s, audio duration: {audio_duration:.2f}s, "
-            f"required duration: {required_video_duration:.2f}s, "
-            f"looped {len(processed_clips)-len(base_clips)} clips"
-        )
+        logger.info(f"video duration: {video_duration:.2f}s, audio duration: {audio_duration:.2f}s, looped {len(processed_clips)-len(base_clips)} clips")
      
     # merge video clips progressively, avoid loading all videos at once to avoid memory overflow
     logger.info("starting clip merging process")
@@ -802,23 +860,6 @@ def wrap_text(text, max_width, font="Arial", fontsize=60):
     if current:
         lines.append(current)
 
-    line_start_punctuation = "，。！？；：、,.!?;:)]}）】》」』”’"
-    for index in range(1, len(lines)):
-        # 中文长句按字符拆分时，最后一个句号、逗号等闭合标点可能被单独
-        # 放到下一行，导致字幕背景被异常撑高，视觉上像一个小点掉在正文
-        # 下方。这里在不重新设计换行算法的前提下，把上一行最后一个字
-        # 移到标点行前面，让标点跟随文字显示，兼容中英文常见闭合标点。
-        if not lines[index] or lines[index][0] not in line_start_punctuation:
-            continue
-        if len(lines[index - 1]) <= 1:
-            continue
-
-        candidate = f"{lines[index - 1][-1]}{lines[index]}"
-        candidate_width, _ = get_text_size(candidate)
-        if candidate_width <= max_width:
-            lines[index] = candidate
-            lines[index - 1] = lines[index - 1][:-1]
-
     result = "\n".join(line.strip() for line in lines if line.strip()).strip()
     height = len(lines) * height
     return result, height
@@ -857,42 +898,6 @@ def _rounded_subtitle_background_clip(
     return ImageClip(np.array(img), transparent=True)
 
 
-def _get_visible_center_position(
-    text_clip: TextClip,
-    container_width: int,
-    container_height: int,
-) -> tuple[int, int]:
-    """
-    按文字真实可见像素把 TextClip 放到背景容器中心。
-
-    MoviePy 的 TextClip 会按字体行高和 baseline 创建透明画布。很多字体的
-    可见字形并不在这个画布的几何中心，直接 `with_position("center")`
-    会把整块透明画布居中，导致字幕看起来偏上或偏下。这里读取 TextClip
-    的透明 mask，只根据实际有像素的 bbox 计算偏移，让用户看到的文字
-    在字幕背景里视觉居中。
-    """
-    x = int(round((container_width - text_clip.w) / 2))
-    y = int(round((container_height - text_clip.h) / 2))
-
-    try:
-        if text_clip.mask is None:
-            return x, y
-
-        mask_frame = text_clip.mask.get_frame(0)
-        ys, _ = np.where(mask_frame > 0.01)
-        if len(ys) == 0:
-            return x, y
-
-        visible_top = int(ys.min())
-        visible_bottom = int(ys.max())
-        visible_height = visible_bottom - visible_top + 1
-        y = int(round((container_height - visible_height) / 2 - visible_top))
-    except Exception as exc:
-        logger.debug(f"failed to center subtitle text by visible mask: {str(exc)}")
-
-    return x, y
-
-
 def generate_video(
     video_path: str,
     audio_path: str,
@@ -916,12 +921,13 @@ def generate_video(
 
     font_path = ""
     if params.subtitle_enabled:
-        if not params.font_name:
-            params.font_name = "STHeitiMedium.ttc"
-        font_path = os.path.join(utils.font_dir(), params.font_name)
-        if os.name == "nt":
-            font_path = font_path.replace("\\", "/")
-
+        font_path = utils.resolve_font_path(params.font_name or "Roboto-Bold.ttf")
+        if params.font_name and not os.path.isfile(
+            os.path.join(utils.font_dir(), params.font_name)
+        ):
+            logger.warning(
+                f"subtitle font not found: {params.font_name}, using fallback: {font_path}"
+            )
         logger.info(f"  ⑤ font: {font_path}")
 
     def resolve_subtitle_background_color():
@@ -937,34 +943,23 @@ def generate_video(
         params.stroke_width = int(params.stroke_width)
         phrase = subtitle_item[1]
         max_width = video_width * 0.9
+        wrapped_txt, txt_height = wrap_text(
+            phrase, max_width=max_width, font=font_path, fontsize=params.font_size
+        )
+        interline = int(params.font_size * 0.25)
+        line_count = wrapped_txt.count("\n") + 1
+        pad_top = int(params.font_size * 0.30)
+        pad_bottom = int(params.font_size * 0.48)
+        # MoviePy 在 `method=label` 下会自动收缩文本框高度，遇到多行字幕、
+        # 描边或背景色时，容易把最后一行的下半部分裁掉。这里显式传入
+        # 一个更保守的高度，把行间距和额外上下留白一并算进去，保证字幕
+        # 背景框与文字本身都能完整渲染出来。pad_bottom > pad_top 让底板
+        # 在文字下方留更多 respiro (mobile reels).
+        clip_h = int(txt_height + pad_top + pad_bottom + (interline * line_count))
         bg_color = resolve_subtitle_background_color()
         rounded_bg_enabled = bool(
             getattr(params, "rounded_subtitle_background", False) and bg_color
         )
-        has_subtitle_background = bool(bg_color)
-        pad_x = int(params.font_size * 0.6) if has_subtitle_background else 0
-        # 字幕背景需要给文字左右留出明确内边距。先从可用宽度中扣除
-        # padding 再换行，避免长英文或大字号刚好撑满 90% 视频宽度后，
-        # 文字贴到背景框边缘，看起来像被裁切。普通矩形背景和圆角背景
-        # 都走这条逻辑；无背景字幕则保持原有最大宽度。
-        text_max_width = max(1, int(max_width) - 2 * pad_x)
-        wrapped_txt, txt_height = wrap_text(
-            phrase,
-            max_width=text_max_width,
-            font=font_path,
-            fontsize=params.font_size,
-        )
-        interline = int(params.font_size * 0.25)
-        line_count = wrapped_txt.count("\n") + 1
-        vertical_padding = int(params.font_size * 0.35)
-        text_clip_margin_y = max(
-            int(params.font_size * 0.3), int(params.stroke_width * 2)
-        )
-        # MoviePy 在 `method=label` 下会自动收缩文本框高度，遇到多行字幕、
-        # 描边或背景色时，容易把最后一行的下半部分裁掉。这里显式传入
-        # 一个更保守的高度，把行间距和额外上下留白一并算进去，保证字幕
-        # 背景框与文字本身都能完整渲染出来。
-        clip_h = int(txt_height + vertical_padding + (interline * line_count))
 
         if rounded_bg_enabled:
             # 圆角背景需要贴合文字宽度，而不是沿用 90% 视频宽度。这里先用
@@ -981,6 +976,7 @@ def generate_video(
                 )
                 text_w = int(max_width)
 
+            pad_x = int(params.font_size * 0.6)
             box_w = max(1, min(int(max_width), text_w + 2 * pad_x))
             radius = max(8, int(params.font_size * 0.4))
             text_clip = TextClip(
@@ -992,11 +988,9 @@ def generate_video(
                 stroke_color=params.stroke_color,
                 stroke_width=params.stroke_width,
                 interline=interline,
-                size=(box_w, None),
+                size=(box_w, clip_h),
                 text_align="center",
-                margin=(0, text_clip_margin_y),
             )
-            clip_h = max(clip_h, text_clip.h)
             bg_clip = _rounded_subtitle_background_clip(
                 width=box_w,
                 height=clip_h,
@@ -1004,16 +998,12 @@ def generate_video(
                 alpha=140,
                 radius=radius,
             )
-            text_position = _get_visible_center_position(text_clip, box_w, clip_h)
             _clip = CompositeVideoClip(
-                [bg_clip, text_clip.with_position(text_position)],
+                [bg_clip, text_clip.with_position(("center", 0))],
                 size=(box_w, clip_h),
             )
         elif bg_color:
-            size = (
-                int(max_width),
-                clip_h,
-            )
+            box_w = int(max_width)
             text_clip = TextClip(
                 text=wrapped_txt,
                 font=font_path,
@@ -1023,28 +1013,17 @@ def generate_video(
                 stroke_color=params.stroke_color,
                 stroke_width=params.stroke_width,
                 interline=interline,
-                size=(int(max_width), None),
+                size=(box_w, clip_h),
                 text_align="center",
-                margin=(0, text_clip_margin_y),
             )
-            size = (size[0], max(size[1], text_clip.h))
-            bg_clip = _rounded_subtitle_background_clip(
-                width=size[0],
-                height=size[1],
-                color=bg_color,
-                alpha=255,
-                radius=0,
+            bg_clip = ColorClip(
+                size=(box_w, clip_h), color=_hex_to_rgb(bg_color)
             )
-            text_position = _get_visible_center_position(text_clip, size[0], size[1])
             _clip = CompositeVideoClip(
-                [bg_clip, text_clip.with_position(text_position)],
-                size=size,
+                [bg_clip, text_clip.with_position(("center", 0))],
+                size=(box_w, clip_h),
             )
         else:
-            size = (
-                int(max_width),
-                clip_h,
-            )
             _clip = TextClip(
                 text=wrapped_txt,
                 font=font_path,
@@ -1054,7 +1033,7 @@ def generate_video(
                 stroke_color=params.stroke_color,
                 stroke_width=params.stroke_width,
                 interline=interline,
-                size=size,
+                size=(int(max_width), clip_h),
                 text_align="center",
             )
         duration = subtitle_item[0][1] - subtitle_item[0][0]
@@ -1101,7 +1080,11 @@ def generate_video(
             text_clips.append(clip)
         video_clip = CompositeVideoClip([video_clip, *text_clips])
 
-    bgm_file = get_bgm_file(bgm_type=params.bgm_type, bgm_file=params.bgm_file)
+    bgm_file = get_bgm_file(
+        bgm_type=params.bgm_type,
+        bgm_file=params.bgm_file,
+        bgm_profile=getattr(params, "bgm_profile", ""),
+    )
     if bgm_file:
         try:
             bgm_clip = AudioFileClip(bgm_file).with_effects(
@@ -1126,7 +1109,7 @@ def generate_video(
         audio_codec=audio_codec,
         audio_fps=output_audio_fps,
         audio_bitrate=audio_bitrate,
-        temp_audiofile_path=_get_temp_audio_dir(output_dir),
+        temp_audiofile_path=output_dir,
         threads=params.n_threads or 2,
         logger=None,
         fps=fps,

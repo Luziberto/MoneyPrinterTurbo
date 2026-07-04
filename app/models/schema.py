@@ -53,6 +53,52 @@ class MaterialInfo:
     provider: str = "pexels"
     url: str = ""
     duration: int = 0
+    width: int = 0
+    height: int = 0
+    search_term: str = ""
+    metadata_text: str = ""
+    score: int = 0
+
+
+class CollectorJobError(BaseModel):
+    code: str = ""
+    message: str = ""
+
+
+class CollectorSelectedClip(BaseModel):
+    path: str
+    score: float = 0.0
+    retrieval_score: float = 0.0
+    visual_score: float = 0.0
+    duration: float = 0.0
+    matched_keyword: str = ""
+    source: str = ""
+    width: int = 0
+    height: int = 0
+    recommended_clip_duration: Optional[float] = None
+    keyword_scores: Optional[dict[str, float]] = None
+    asset_id: str = ""
+    clip_id: str = ""
+
+
+class CollectorJobRequest(BaseModel):
+    client_task_id: str
+    keywords: List[str]
+    target_clips: int = Field(default=25, ge=1)
+    min_acceptable_clips: int = Field(default=20, ge=1)
+
+
+class CollectorJobResult(BaseModel):
+    job_id: str = ""
+    status: str = ""
+    target_clips: int = 0
+    selected_clips_count: int = 0
+    min_acceptable_clips: int = 0
+    local_reused: int = 0
+    new_downloads: int = 0
+    selected_clips: List[CollectorSelectedClip] = Field(default_factory=list)
+    clips_file: str = ""
+    error: Optional[CollectorJobError] = None
 
 
 class VideoParams(BaseModel):
@@ -84,6 +130,7 @@ class VideoParams(BaseModel):
     video_materials: Optional[List[MaterialInfo]] = (
         None  # Materials used to generate the video
     )
+    video_clips: Optional[List[CollectorSelectedClip]] = None
     
     custom_audio_file: Optional[str] = None  # Custom audio file path, will ignore TTS and can still use Whisper subtitles
     video_language: Optional[str] = ""  # auto detect
@@ -93,11 +140,12 @@ class VideoParams(BaseModel):
     voice_rate: Optional[float] = 1.0
     bgm_type: Optional[str] = "random"
     bgm_file: Optional[str] = ""
+    bgm_profile: Optional[str] = ""
     bgm_volume: Optional[float] = 0.2
 
     subtitle_enabled: Optional[bool] = True
-    subtitle_position: Optional[str] = config.ui.get("subtitle_position", "bottom")  # top, bottom, center, custom
-    custom_position: float = config.ui.get("custom_position", 70.0)
+    subtitle_position: Optional[str] = "bottom"  # top, bottom, center, custom
+    custom_position: float = 70.0
     font_name: Optional[str] = "STHeitiMedium.ttc"
     text_fore_color: Optional[str] = "#FFFFFF"
     text_background_color: Union[bool, str] = True
@@ -120,8 +168,9 @@ class SubtitleRequest(BaseModel):
     voice_rate: Optional[float] = 1.2
     bgm_type: Optional[str] = "random"
     bgm_file: Optional[str] = ""
+    bgm_profile: Optional[str] = ""
     bgm_volume: Optional[float] = 0.2
-    subtitle_position: Optional[str] = config.ui.get("subtitle_position", "bottom")
+    subtitle_position: Optional[str] = "bottom"
     font_name: Optional[str] = "STHeitiMedium.ttc"
     text_fore_color: Optional[str] = "#FFFFFF"
     text_background_color: Union[bool, str] = True
@@ -141,6 +190,7 @@ class AudioRequest(BaseModel):
     voice_rate: Optional[float] = 1.2
     bgm_type: Optional[str] = "random"
     bgm_file: Optional[str] = ""
+    bgm_profile: Optional[str] = ""
     bgm_volume: Optional[float] = 0.2
     video_source: Optional[str] = "local"
 

@@ -104,6 +104,47 @@ def font_dir(sub_dir: str = ""):
     return d
 
 
+SUBTITLE_FONT_FALLBACKS = (
+    "Roboto-Bold.ttf",
+    "DejaVuSans-Bold.ttf",
+    "STHeitiMedium.ttc",
+)
+
+DEJAVU_SYSTEM_FONT_PATHS = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+)
+
+
+def resolve_font_path(font_name: str = "") -> str:
+    """Resolve subtitle font with bundled and system fallbacks."""
+    candidates = []
+    if font_name:
+        candidates.append(font_name)
+    for fallback_name in SUBTITLE_FONT_FALLBACKS:
+        if fallback_name not in candidates:
+            candidates.append(fallback_name)
+
+    for name in candidates:
+        path = os.path.join(font_dir(), name)
+        if os.path.isfile(path):
+            if os.name == "nt":
+                path = path.replace("\\", "/")
+            return path
+
+    for path in DEJAVU_SYSTEM_FONT_PATHS:
+        if os.path.isfile(path):
+            if os.name == "nt":
+                path = path.replace("\\", "/")
+            return path
+
+    path = os.path.join(font_dir(), candidates[0])
+    if os.name == "nt":
+        path = path.replace("\\", "/")
+    return path
+
+
 def song_dir(sub_dir: str = ""):
     d = resource_dir("songs")
     if sub_dir:

@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.services import task as tm
-from app.models.schema import MaterialInfo, VideoParams
+from app.models.schema import CollectorSelectedClip, MaterialInfo, VideoParams
 from app.utils import utils
 
 resources_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources")
@@ -74,6 +74,51 @@ class TestTaskService(unittest.TestCase):
             amount=8,
             match_script_order=True,
         )
+
+    def test_get_video_materials_records_structured_collector_error(self):
+        params = VideoParams(
+            video_subject="Tokyo",
+            video_source="collector",
+            video_clip_duration=3,
+            video_count=1,
+        )
+
+        with patch.object(
+            tm.material,
+            "download_videos",
+            side_effect=tm.collector_client.CollectorTimeoutError(
+                "COLLECTOR_TIMEOUT",
+                "Timed out while waiting for stock job to finish",
+            ),
+        ), patch.object(tm.sm.state, "update_task") as update_task:
+            result = tm.get_video_materials(
+                task_id="collector-task",
+                params=params,
+                video_terms=["tokyo street"],
+                audio_duration=30,
+            )
+
+        self.assertIsNone(result)
+        update_task.assert_called_once()
+        self.assertEqual(update_task.call_args.kwargs["error"]["code"], "COLLECTOR_TIMEOUT")
+
+    def test_serialize_materials_for_state_supports_structured_clips(self):
+        clip = CollectorSelectedClip(
+            path="/tmp/clip.mp4",
+            score=0.8,
+            retrieval_score=0.7,
+            visual_score=0.9,
+            duration=10.0,
+            matched_keyword="tokyo street",
+            source="magnific",
+            width=1080,
+            height=1920,
+        )
+
+        serialized = tm._serialize_materials_for_state([clip, "/tmp/legacy.mp4"])
+
+        self.assertEqual(serialized[0]["path"], "/tmp/clip.mp4")
+        self.assertEqual(serialized[1], "/tmp/legacy.mp4")
     
     def test_generate_audio_uses_custom_file_inside_task_directory(self):
         task_id = "test-custom-audio-safe"

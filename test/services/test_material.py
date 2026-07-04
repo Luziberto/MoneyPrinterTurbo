@@ -1,4 +1,5 @@
 import os
+import os
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.config import config
+from app.models.schema import CollectorJobResult, CollectorSelectedClip, VideoAspect, VideoConcatMode
 from app.services import material
 
 
@@ -424,6 +426,582 @@ class TestCoverrProvider(unittest.TestCase):
 
         # 3. 返回值正确
         self.assertEqual(result, ["/tmp/coverr-saved.mp4"])
+
+
+class TestStockVideoAggregator(unittest.TestCase):
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+        self.original_proxy_config = dict(config.proxy)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+        config.proxy.clear()
+        config.proxy.update(self.original_proxy_config)
+
+    def _make_item(self, provider: str, url: str, duration: int = 10) -> material.MaterialInfo:
+        item = material.MaterialInfo()
+        item.provider = provider
+        item.url = url
+        item.duration = duration
+        return item
+
+    def test_search_stock_videos_merges_and_dedupes(self):
+        config.app["pexels_api_keys"] = ["pexels-key"]
+        config.app["pixabay_api_keys"] = ["pixabay-key"]
+        config.app["coverr_api_keys"] = ["coverr-key"]
+
+        pexels_items = [
+            self._make_item("pexels", "https://example.com/a.mp4?token=1"),
+            self._make_item("pexels", "https://example.com/b.mp4"),
+        ]
+        pixabay_items = [
+            self._make_item("pixabay", "https://example.com/a.mp4?token=2"),
+            self._make_item("pixabay", "https://example.com/c.mp4"),
+        ]
+        coverr_items = [
+            self._make_item("coverr", "https://example.com/d.mp4?dl=1"),
+        ]
+
+        with patch(
+            "app.services.material.search_videos_pexels", return_value=pexels_items
+        ), patch(
+            "app.services.material.search_videos_pixabay", return_value=pixabay_items
+        ), patch(
+            "app.services.material.search_videos_coverr", return_value=coverr_items
+        ):
+            results = material.search_stock_videos("japan", minimum_duration=5)
+
+        urls = [item.url for item in results]
+        self.assertEqual(len(results), 4)
+        self.assertIn("https://example.com/a.mp4?token=1", urls)
+        self.assertIn("https://example.com/b.mp4", urls)
+        self.assertIn("https://example.com/c.mp4", urls)
+        self.assertIn("https://example.com/d.mp4?dl=1", urls)
+        providers = {item.provider for item in results}
+        self.assertEqual(providers, {"pexels", "pixabay", "coverr"})
+
+    def test_search_stock_videos_skips_missing_api_key(self):
+        config.app["pexels_api_keys"] = []
+        config.app["pixabay_api_keys"] = ["pixabay-key"]
+        config.app["coverr_api_keys"] = ["coverr-key"]
+
+        pixabay_items = [self._make_item("pixabay", "https://example.com/p.mp4")]
+        coverr_items = [self._make_item("coverr", "https://example.com/c.mp4")]
+
+        with patch(
+            "app.services.material.search_videos_pexels",
+        ) as search_pexels, patch(
+            "app.services.material.search_videos_pixabay", return_value=pixabay_items
+        ), patch(
+            "app.services.material.search_videos_coverr", return_value=coverr_items
+        ):
+            results = material.search_stock_videos("japan", minimum_duration=5)
+
+        search_pexels.assert_not_called()
+        self.assertEqual(len(results), 2)
+        self.assertEqual({item.provider for item in results}, {"pixabay", "coverr"})
+
+    def test_search_stock_videos_continues_on_provider_error(self):
+        config.app["pexels_api_keys"] = ["pexels-key"]
+        config.app["pixabay_api_keys"] = ["pixabay-key"]
+        config.app["coverr_api_keys"] = ["coverr-key"]
+
+        pixabay_items = [self._make_item("pixabay", "https://example.com/p.mp4")]
+        coverr_items = [self._make_item("coverr", "https://example.com/c.mp4")]
+
+        with patch(
+            "app.services.material.search_videos_pexels",
+            side_effect=RuntimeError("pexels down"),
+        ), patch(
+            "app.services.material.search_videos_pixabay", return_value=pixabay_items
+        ), patch(
+            "app.services.material.search_videos_coverr", return_value=coverr_items
+        ):
+            results = material.search_stock_videos("japan", minimum_duration=5)
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual({item.provider for item in results}, {"pixabay", "coverr"})
+
+    def test_download_videos_dispatches_stock_source(self):
+        config.app["pexels_api_keys"] = ["pexels-key"]
+        config.app["pixabay_api_keys"] = ["pixabay-key"]
+        config.app["coverr_api_keys"] = ["coverr-key"]
+        config.app.pop("material_directory", None)
+
+        fake_item = self._make_item("pexels", "https://example.com/stock.mp4")
+
+        with patch(
+            "app.services.material.search_stock_videos",
+            return_value=[fake_item],
+        ) as search_stock, patch(
+            "app.services.material.save_video",
+            return_value="/tmp/stock-saved.mp4",
+        ):
+            result = material.download_videos(
+                task_id="t-stock",
+                search_terms=["japan"],
+                source="stock",
+                audio_duration=5,
+                max_clip_duration=5,
+            )
+
+        self.assertEqual(search_stock.call_count, 1)
+        self.assertEqual(result, ["/tmp/stock-saved.mp4"])
+
+
+class TestMaterialScoring(unittest.TestCase):
+    def _make_item(
+        self,
+        provider: str = "pexels",
+        url: str = "https://example.com/video.mp4",
+        duration: int = 10,
+        width: int = 0,
+        height: int = 0,
+        search_term: str = "",
+        metadata_text: str = "",
+    ) -> material.MaterialInfo:
+        item = material.MaterialInfo()
+        item.provider = provider
+        item.url = url
+        item.duration = duration
+        item.width = width
+        item.height = height
+        item.search_term = search_term
+        item.metadata_text = metadata_text
+        return item
+
+    def test_score_material_portrait_high(self):
+        item = self._make_item(
+            width=1080,
+            height=1920,
+            duration=10,
+            search_term="japan street",
+            metadata_text="japan street market",
+        )
+        score = material._score_material(
+            item, VideoAspect.portrait, target_w=1080, target_h=1920
+        )
+        self.assertEqual(score, 12)
+
+    def test_score_material_landscape_low_for_portrait(self):
+        item = self._make_item(
+            width=1920,
+            height=1080,
+            duration=10,
+            search_term="japan street",
+            metadata_text="unrelated scenery",
+        )
+        score = material._score_material(
+            item, VideoAspect.portrait, target_w=1080, target_h=1920
+        )
+        self.assertEqual(score, 2)
+
+    def test_rank_materials_top_n(self):
+        high_items = [
+            self._make_item(
+                url=f"https://example.com/high-{index}.mp4",
+                width=1080,
+                height=1920,
+                duration=10,
+                search_term="japan",
+                metadata_text="japan street",
+            )
+            for index in range(35)
+        ]
+        low_items = [
+            self._make_item(
+                url=f"https://example.com/low-{index}.mp4",
+                width=1920,
+                height=1080,
+                duration=10,
+                search_term="japan",
+                metadata_text="unrelated",
+            )
+            for index in range(5)
+        ]
+
+        ranked = material._rank_materials(high_items + low_items, VideoAspect.portrait)
+
+        self.assertEqual(len(ranked), material.MATERIAL_SCORE_TOP_N)
+        self.assertTrue(all(item.score == 12 for item in ranked))
+        self.assertTrue(
+            all("high-" in item.url for item in ranked)
+        )
+
+    def test_rank_materials_stable_tie(self):
+        first = self._make_item(
+            url="https://example.com/first.mp4",
+            width=1080,
+            height=1920,
+            duration=10,
+            search_term="tokyo",
+            metadata_text="tokyo street",
+        )
+        second = self._make_item(
+            url="https://example.com/second.mp4",
+            width=1080,
+            height=1920,
+            duration=10,
+            search_term="tokyo",
+            metadata_text="tokyo street",
+        )
+        ranked = material._rank_materials([first, second], VideoAspect.portrait)
+
+        self.assertEqual(ranked[0].url, "https://example.com/first.mp4")
+        self.assertEqual(ranked[1].url, "https://example.com/second.mp4")
+        self.assertEqual(ranked[0].score, ranked[1].score)
+
+    def test_download_videos_random_shuffles_only_ranked(self):
+        config.app.pop("material_directory", None)
+
+        fake_items = [
+            self._make_item(
+                url=f"https://example.com/ranked-{index}.mp4",
+                width=1080,
+                height=1920,
+                duration=10,
+            )
+            for index in range(3)
+        ]
+
+        with patch(
+            "app.services.material.search_videos_pexels",
+            return_value=fake_items,
+        ), patch(
+            "app.services.material._rank_materials",
+            return_value=fake_items,
+        ) as rank, patch(
+            "app.services.material.random.shuffle",
+        ) as shuffle, patch(
+            "app.services.material.save_video",
+            return_value="/tmp/ranked.mp4",
+        ):
+            material.download_videos(
+                task_id="t-random",
+                search_terms=["japan"],
+                source="pexels",
+                video_contact_mode=VideoConcatMode.random,
+                audio_duration=5,
+                max_clip_duration=5,
+            )
+
+        rank.assert_called_once()
+        shuffle.assert_called_once_with(fake_items)
+
+    def test_download_videos_sequential_no_shuffle(self):
+        config.app.pop("material_directory", None)
+
+        fake_items = [
+            self._make_item(
+                url="https://example.com/sequential.mp4",
+                width=1080,
+                height=1920,
+                duration=10,
+            )
+        ]
+
+        with patch(
+            "app.services.material.search_videos_pexels",
+            return_value=fake_items,
+        ), patch(
+            "app.services.material._rank_materials",
+            return_value=fake_items,
+        ), patch(
+            "app.services.material.random.shuffle",
+        ) as shuffle, patch(
+            "app.services.material.save_video",
+            return_value="/tmp/sequential.mp4",
+        ):
+            material.download_videos(
+                task_id="t-sequential",
+                search_terms=["japan"],
+                source="pexels",
+                video_contact_mode=VideoConcatMode.sequential,
+                audio_duration=5,
+                max_clip_duration=5,
+            )
+
+        shuffle.assert_not_called()
+
+
+class TestCollectorProvider(unittest.TestCase):
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+        self.original_proxy_config = dict(config.proxy)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+        config.proxy.clear()
+        config.proxy.update(self.original_proxy_config)
+
+    def test_map_collector_path_different_dirs(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_root = os.path.join(temp_dir, "collector_local")
+            os.makedirs(os.path.join(local_root, "clips"), exist_ok=True)
+            source_file = os.path.join(local_root, "clips", "taiyaki.mp4")
+            with open(source_file, "wb") as handle:
+                handle.write(b"fake")
+
+            config.app["collector_remote_dir"] = "/downloads"
+            config.app["collector_local_dir"] = local_root
+
+            resolved = material.map_collector_path("/downloads/clips/taiyaki.mp4")
+            self.assertEqual(resolved, source_file)
+
+    def test_map_collector_path_rejects_traversal(self):
+        config.app["collector_remote_dir"] = "/data/downloads"
+        config.app["collector_local_dir"] = "/data/downloads"
+
+        with self.assertRaises(ValueError):
+            material.map_collector_path("/data/downloads/../etc/passwd")
+
+    def test_search_collector_maps_api_response(self):
+        fake_hits = [
+            {
+                "clip_id": "abc123",
+                "title": "Taiyaki street vendor",
+                "local_path": "/data/downloads/taiyaki.mp4",
+                "duration": 12.4,
+                "width": 1080,
+                "height": 1920,
+                "source_site": "storyblocks",
+            }
+        ]
+
+        with patch(
+            "app.services.material.collector_client.search_collector_clips",
+            return_value=fake_hits,
+        ):
+            results = material.search_videos_collector("taiyaki", minimum_duration=5)
+
+        self.assertEqual(len(results), 1)
+        item = results[0]
+        self.assertEqual(item.provider, "collector")
+        self.assertEqual(item.url, "/data/downloads/taiyaki.mp4")
+        self.assertEqual(item.duration, 12)
+        self.assertEqual(item.width, 1080)
+        self.assertEqual(item.height, 1920)
+        self.assertIn("Taiyaki", item.metadata_text)
+
+    def test_stage_collector_clip_copies_to_cache(self):
+        import tempfile
+
+        class FakeVideoFileClip:
+            duration = 10
+            fps = 24
+
+            def __init__(self, path):
+                self.path = path
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            remote_root = os.path.join(temp_dir, "remote")
+            local_root = os.path.join(temp_dir, "local")
+            cache_dir = os.path.join(temp_dir, "cache")
+            os.makedirs(remote_root)
+            os.makedirs(local_root)
+            os.makedirs(cache_dir)
+
+            source_file = os.path.join(local_root, "clip.mp4")
+            with open(source_file, "wb") as handle:
+                handle.write(b"video-bytes")
+
+            config.app["collector_remote_dir"] = remote_root
+            config.app["collector_local_dir"] = local_root
+
+            with patch("app.services.material.VideoFileClip", FakeVideoFileClip):
+                staged = material.stage_collector_clip(
+                    os.path.join(remote_root, "clip.mp4"),
+                    save_dir=cache_dir,
+                )
+
+            self.assertTrue(staged.startswith(cache_dir))
+            self.assertTrue(os.path.exists(staged))
+            with open(staged, "rb") as handle:
+                self.assertEqual(handle.read(), b"video-bytes")
+
+    def test_download_videos_dispatches_collector_source(self):
+        config.app.pop("material_directory", None)
+        selected_clip = CollectorSelectedClip(
+            path="/tmp/collector.mp4",
+            score=0.8,
+            retrieval_score=0.7,
+            visual_score=0.9,
+            duration=12.0,
+            matched_keyword="taiyaki",
+            source="magnific",
+            width=1080,
+            height=1920,
+        )
+
+        with patch(
+            "app.services.material.download_videos_with_collector_fallback",
+            return_value=[selected_clip],
+        ) as fallback:
+            result = material.download_videos(
+                task_id="t-collector",
+                search_terms=["taiyaki"],
+                source="collector",
+                audio_duration=30,
+                max_clip_duration=5,
+            )
+
+        fallback.assert_called_once()
+        self.assertEqual(result, [selected_clip])
+
+    def test_collector_sufficient_skips_stock(self):
+        selected_clip = CollectorSelectedClip(
+            path="/tmp/c1.mp4",
+            score=0.8,
+            retrieval_score=0.7,
+            visual_score=0.9,
+            duration=12.0,
+            matched_keyword="taiyaki",
+            source="magnific",
+            width=1080,
+            height=1920,
+        )
+        with patch(
+            "app.services.material.collector_client.check_collector_health",
+            return_value=True,
+        ), patch(
+            "app.services.material.download_videos_from_collector",
+            return_value=[selected_clip],
+        ), patch(
+            "app.services.material._download_videos_from_remote",
+        ) as remote:
+            result = material.download_videos_with_collector_fallback(
+                task_id="t-enough",
+                search_terms=["taiyaki"],
+                audio_duration=50,
+                max_clip_duration=5,
+            )
+
+        remote.assert_not_called()
+        self.assertEqual(result, [selected_clip])
+
+    def test_collector_error_can_fallback_when_enabled(self):
+        config.app["collector_enable_legacy_fallback"] = True
+        with patch(
+            "app.services.material.collector_client.check_collector_health",
+            return_value=True,
+        ), patch(
+            "app.services.material.download_videos_from_collector",
+            side_effect=material.collector_client.CollectorJobFailedError(
+                "NO_RESULTS", "Not enough clips found"
+            ),
+        ), patch(
+            "app.services.material._download_videos_from_remote",
+            return_value=["/tmp/s1.mp4"],
+        ) as remote:
+            result = material.download_videos_with_collector_fallback(
+                task_id="t-fallback-enabled",
+                search_terms=["taiyaki"],
+                audio_duration=60,
+                max_clip_duration=5,
+            )
+
+        remote.assert_called_once()
+        self.assertEqual(remote.call_args.kwargs["audio_duration"], 60)
+        self.assertEqual(result, ["/tmp/s1.mp4"])
+
+    def test_collector_health_fail_full_stock(self):
+        config.app["collector_fallback_source"] = "stock"
+        config.app["collector_enable_legacy_fallback"] = True
+
+        with patch(
+            "app.services.material.collector_client.check_collector_health",
+            return_value=False,
+        ), patch(
+            "app.services.material.download_videos_from_collector",
+        ) as from_collector, patch(
+            "app.services.material._download_videos_from_remote",
+            return_value=["/tmp/stock.mp4"],
+        ) as remote:
+            result = material.download_videos_with_collector_fallback(
+                task_id="t-fallback",
+                search_terms=["taiyaki"],
+                audio_duration=60,
+                max_clip_duration=5,
+            )
+
+        from_collector.assert_not_called()
+        remote.assert_called_once()
+        self.assertEqual(remote.call_args.kwargs["audio_duration"], 60)
+        self.assertEqual(result, ["/tmp/stock.mp4"])
+
+    def test_collector_health_fail_raises_without_legacy_fallback(self):
+        config.app["collector_enable_legacy_fallback"] = False
+
+        with patch(
+            "app.services.material.collector_client.check_collector_health",
+            return_value=False,
+        ):
+            with self.assertRaises(
+                material.collector_client.CollectorJobFailedError
+            ) as ctx:
+                material.download_videos_with_collector_fallback(
+                    task_id="t-no-fallback",
+                    search_terms=["taiyaki"],
+                    audio_duration=60,
+                    max_clip_duration=5,
+                )
+
+        self.assertEqual(ctx.exception.code, "COLLECTOR_UNAVAILABLE")
+
+    def test_download_videos_from_collector_creates_job_and_stages_selected_clips(self):
+        config.app["collector_target_clips"] = 25
+        config.app["collector_min_acceptable_clips"] = 1
+        config.app.pop("material_directory", None)
+        ready_job = CollectorJobResult(
+            job_id="job-123",
+            status="ready",
+            selected_clips_count=1,
+            min_acceptable_clips=1,
+            selected_clips=[
+                {
+                    "path": "/data/downloads/clip.mp4",
+                    "score": 0.8,
+                    "retrieval_score": 0.7,
+                    "visual_score": 0.9,
+                    "duration": 12.0,
+                    "matched_keyword": "taiyaki",
+                    "source": "magnific",
+                    "width": 1080,
+                    "height": 1920,
+                }
+            ],
+        )
+
+        with patch(
+            "app.services.material.collector_client.create_stock_job",
+            return_value=CollectorJobResult(job_id="job-123", status="pending"),
+        ) as create_job, patch(
+            "app.services.material.collector_client.wait_for_stock_job",
+            return_value=ready_job,
+        ), patch(
+            "app.services.material.collector_client.load_selected_clips",
+            return_value=ready_job.selected_clips,
+        ), patch(
+            "app.services.material.stage_collector_clip",
+            return_value="/tmp/staged-clip.mp4",
+        ):
+            result = material.download_videos_from_collector(
+                task_id="t-job",
+                search_terms=["taiyaki"],
+                audio_duration=60,
+                max_clip_duration=5,
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].path, "/tmp/staged-clip.mp4")
+        self.assertEqual(create_job.call_args.args[0].client_task_id, "mpt_t-job")
 
 
 if __name__ == "__main__":
