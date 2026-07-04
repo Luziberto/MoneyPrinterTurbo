@@ -37,3 +37,10 @@ streamlit.log
 .codegraph
 /docs/superpowers
 .understand-anything
+
+# Pipeline runtime artifacts
+pipeline/runs/
+pipeline/data/
+pipeline/assets/music/**/*.mp3
+pipeline/assets/music/**/*.wav
+pipeline/assets/music/**/*.flac
