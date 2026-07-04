@@ -44,5 +44,6 @@
   "n_threads": 2,
   "category_overrides": {},
   "music_profile_overrides": {},
-  "topic_distribution": {}
+  "topic_distribution": {},
+  "match_materials_to_script": true
 }

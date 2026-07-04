@@ -33,6 +33,8 @@ debug/
 debug_*.py
 test_*.py
 !test/services/test_*.py
+!test/webui/test_*.py
+!test/pipeline/test_*.py
 streamlit.log
 .codegraph
 /docs/superpowers

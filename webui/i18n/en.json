@@ -236,6 +236,27 @@
     "Cockpit Step Validate": "Validating providers and parameters",
     "Cockpit Step Terms": "Generating keywords",
     "Cockpit Step TTS": "Synthesizing voice",
-    "Cockpit Step Running": "Running render pipeline"
+    "Cockpit Step Running": "Running render pipeline",
+    "Cockpit More Video Sources": "More video sources",
+    "Cockpit Use Alternative Source": "Use this source",
+    "Cockpit Active Source": "Active source",
+    "Cockpit Topics Filter": "Filter topics",
+    "Cockpit Topics Pending": "Pending",
+    "Cockpit Topics Used": "Used",
+    "Cockpit Topics All": "All",
+    "Cockpit All Topics": "All topics",
+    "Cockpit Used Topics": "Used topics",
+    "Cockpit Topic Category": "Category",
+    "Cockpit Topic Status": "Status",
+    "Cockpit Topic Music": "Music",
+    "Cockpit Clip Diagnosis": "Clip diagnosis",
+    "Cockpit Clip Total": "Segments",
+    "Cockpit Clip Unique": "Unique sources",
+    "Cockpit Clip Repeated": "Repeated",
+    "Cockpit Warn No Materials": "No clips were recorded in the render result.",
+    "Cockpit Warn Repeated Sources": "Some clips share the same source — visual repetition risk.",
+    "Cockpit Warn Low Diversity": "Low source diversity relative to total segments.",
+    "Cockpit Warn Partial Collector": "Collector returned fewer clips than the job target.",
+    "Cockpit Repeated Detail": "Repeated sources:"
   }
 }

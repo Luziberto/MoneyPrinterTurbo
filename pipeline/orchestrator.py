@@ -106,6 +106,9 @@ def build_video_payload(
         "bgm_profile": config.get("bgm_profile", ""),
         "bgm_volume": config.get("bgm_volume", 0.2),
         "n_threads": config.get("n_threads", 2),
+        "match_materials_to_script": bool(
+            config.get("match_materials_to_script", False)
+        ),
     }
 
 

@@ -944,20 +944,61 @@ with tab_create:
             )
             if saved_video_source_name == "stock":
                 saved_video_source_name = "pexels"
-            video_source_values = [v[1] for v in video_sources]
-            saved_video_source_index = (
-                video_source_values.index(saved_video_source_name)
-                if saved_video_source_name in video_source_values
-                else 0
+            primary_video_sources = [
+                (tr("Collector (local cache)"), "collector"),
+                (tr("Pexels"), "pexels"),
+                (tr("Local file"), "local"),
+            ]
+            primary_values = {value for _, value in primary_video_sources}
+            card_default = (
+                saved_video_source_name
+                if saved_video_source_name in primary_values
+                else "collector"
             )
-
-            selected_index = st.selectbox(
+            params.video_source = cockpit.render_option_cards(
                 tr("Video Source"),
-                options=range(len(video_sources)),
-                format_func=lambda x: video_sources[x][0],
-                index=saved_video_source_index,
+                primary_video_sources,
+                card_default,
+                "cockpit_video_source",
             )
-            params.video_source = video_sources[selected_index][1]
+            other_video_sources = [
+                (label, value)
+                for label, value in video_sources
+                if value not in primary_values
+            ]
+            with st.expander(tr("Cockpit More Video Sources"), expanded=False):
+                other_values = [value for _, value in other_video_sources]
+                other_index = (
+                    other_values.index(saved_video_source_name)
+                    if saved_video_source_name in other_values
+                    else 0
+                )
+                other_selected_index = st.selectbox(
+                    tr("Alternative Video Source"),
+                    options=range(len(other_video_sources)),
+                    format_func=lambda x: other_video_sources[x][0],
+                    index=other_index,
+                    key="cockpit_other_video_source",
+                )
+                if st.button(
+                    tr("Cockpit Use Alternative Source"),
+                    key="cockpit_apply_other_video_source",
+                ):
+                    st.session_state["cockpit_video_source"] = other_video_sources[
+                        other_selected_index
+                    ][1]
+                    st.rerun()
+            if saved_video_source_name not in primary_values:
+                params.video_source = saved_video_source_name
+                other_label = next(
+                    (
+                        label
+                        for label, value in video_sources
+                        if value == saved_video_source_name
+                    ),
+                    saved_video_source_name,
+                )
+                st.caption(f"{tr('Cockpit Active Source')}: {other_label}")
             config.ui["video_source"] = params.video_source
 
             if params.video_source == "local":
@@ -1006,25 +1047,23 @@ with tab_create:
                 (tr("Portrait"), VideoAspect.portrait.value),
                 (tr("Landscape"), VideoAspect.landscape.value),
             ]
-            # Coverr 库 99% 是 16:9 横屏,默认竖屏会让画面被大量黑边包围。
-            # 用 source-specific widget key 让每个 source 各自记忆 aspect 选择:
-            #   - 首次切到 coverr → 默认 Landscape(index=1)
-            #   - 其他 source 沿用 Portrait(index=0)
-            #   - 用户在某 source 下手动改过 aspect,session_state 会记住,
-            #     下次回到同一 source 时尊重用户选择,不会再被强制覆盖。
-            default_aspect_index = 1 if params.video_source == "coverr" else 0
-            selected_index = st.selectbox(
-                tr("Video Ratio"),
-                options=range(
-                    len(video_aspect_ratios)
-                ),  # Use the index as the internal option value
-                format_func=lambda x: video_aspect_ratios[x][
-                    0
-                ],  # The label is displayed to the user
-                index=default_aspect_index,
-                key=f"video_aspect_for_{params.video_source}",
+            saved_video_aspect = config.ui.get("video_aspect", VideoAspect.portrait.value)
+            if isinstance(saved_video_aspect, VideoAspect):
+                saved_video_aspect = saved_video_aspect.value
+            default_aspect = (
+                VideoAspect.landscape.value
+                if params.video_source == "coverr"
+                else saved_video_aspect
             )
-            params.video_aspect = VideoAspect(video_aspect_ratios[selected_index][1])
+            params.video_aspect = VideoAspect(
+                cockpit.render_option_cards(
+                    tr("Video Ratio"),
+                    video_aspect_ratios,
+                    default_aspect,
+                    f"cockpit_video_aspect_{params.video_source}",
+                )
+            )
+            config.ui["video_aspect"] = params.video_aspect.value
 
             params.video_clip_duration = st.selectbox(
                 tr("Clip Duration"), options=[2, 3, 4, 5, 6, 7, 8, 9, 10], index=1
@@ -1513,16 +1552,11 @@ with tab_create:
                 profiles = bgm_service.list_profiles()
                 if profiles:
                     saved_bgm_profile = config.ui.get("bgm_profile", "")
-                    saved_profile_index = (
-                        profiles.index(saved_bgm_profile)
-                        if saved_bgm_profile in profiles
-                        else 0
-                    )
-                    params.bgm_profile = st.selectbox(
+                    params.bgm_profile = cockpit.render_option_cards(
                         tr("Background Music Profile"),
-                        profiles,
-                        index=saved_profile_index,
-                        key="bgm_profile_selector",
+                        [(profile, profile) for profile in profiles],
+                        saved_bgm_profile if saved_bgm_profile in profiles else profiles[0],
+                        "cockpit_bgm_profile",
                     )
                     config.ui["bgm_profile"] = params.bgm_profile
                 else:
@@ -1887,6 +1921,7 @@ with tab_create:
 
         video_files = result.get("videos", [])
         st.success(tr("Video Generation Completed"))
+        cockpit.render_clip_diagnosis(result, tr)
         st.session_state["preview_ready"] = False
         try:
             if video_files:

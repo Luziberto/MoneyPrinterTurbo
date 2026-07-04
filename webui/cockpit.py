@@ -4,12 +4,65 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from uuid import UUID
 
 import streamlit as st
+
+
+def _material_source_key(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(
+            item.get("path")
+            or item.get("source_file_path")
+            or item.get("url")
+            or ""
+        ).strip()
+    if isinstance(item, str):
+        return item.strip()
+    return str(item or "").strip()
+
+
+def analyze_clip_materials(materials: list[Any] | None) -> dict[str, Any]:
+    """Summarize clip diversity and repetition from task materials."""
+    sources = [_material_source_key(item) for item in (materials or [])]
+    sources = [source for source in sources if source]
+    counter = Counter(sources)
+    total = len(sources)
+    unique = len(counter)
+    repeated = {path: count for path, count in counter.items() if count > 1}
+
+    warnings: list[str] = []
+    if total == 0:
+        warnings.append("no_materials")
+    if repeated:
+        warnings.append("repeated_sources")
+    if total >= 3 and unique / total < 0.6:
+        warnings.append("low_diversity")
+
+    collector_items = [item for item in (materials or []) if isinstance(item, dict)]
+    if collector_items:
+        target = max(
+            (
+                int(item.get("target_clips") or 0)
+                for item in collector_items
+                if item.get("target_clips")
+            ),
+            default=0,
+        )
+        if target and total < target:
+            warnings.append("partial_collector_job")
+
+    return {
+        "total_segments": total,
+        "unique_sources": unique,
+        "repeated_sources": repeated,
+        "warnings": warnings,
+        "sources": sources,
+    }
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PIPELINE_DIR = ROOT_DIR / "pipeline"
@@ -263,18 +316,59 @@ def render_channels_tab(
         return
 
     pending = [topic for topic in topics if topic.get("status") == "pending"]
-    st.write(f"**{tr('Cockpit Pending Topics')}** ({len(pending)})")
+    used_statuses = {"generated", "approved", "published"}
+    used = [topic for topic in topics if topic.get("status") in used_statuses]
 
-    for topic in pending[:25]:
-        cols = st.columns([1, 4, 1])
+    filter_options = [
+        (tr("Cockpit Topics Pending"), "pending"),
+        (tr("Cockpit Topics Used"), "used"),
+        (tr("Cockpit Topics All"), "all"),
+    ]
+    filter_labels = [label for label, _ in filter_options]
+    filter_values = [value for _, value in filter_options]
+    selected_filter = st.radio(
+        tr("Cockpit Topics Filter"),
+        options=filter_values,
+        format_func=lambda value: filter_labels[filter_values.index(value)],
+        horizontal=True,
+        key=f"cockpit_topic_filter_{active}",
+    )
+
+    if selected_filter == "pending":
+        visible = pending
+        section_title = tr("Cockpit Pending Topics")
+    elif selected_filter == "used":
+        visible = used
+        section_title = tr("Cockpit Used Topics")
+    else:
+        visible = topics
+        section_title = tr("Cockpit All Topics")
+
+    st.write(f"**{section_title}** ({len(visible)})")
+
+    if not visible:
+        st.info(tr("Cockpit No Topics"))
+        return
+
+    for topic in visible[:40]:
         topic_id = topic.get("id")
+        uid = topic.get("uid", "—")
+        category = topic.get("category", "—")
+        status = topic.get("status", "—")
+        profiles = topic.get("music_profiles") or []
+        profile_label = ", ".join(profiles) if profiles else "—"
+
+        cols = st.columns([1, 4, 1])
         with cols[0]:
             st.write(f"#{topic_id}")
+            st.caption(uid[:8] if isinstance(uid, str) else uid)
         with cols[1]:
             st.write(topic.get("topic", ""))
-            profiles = topic.get("music_profiles") or []
-            if profiles:
-                st.caption(", ".join(profiles))
+            st.caption(
+                f"{tr('Cockpit Topic Category')}: {category} · "
+                f"{tr('Cockpit Topic Status')}: {status} · "
+                f"{tr('Cockpit Topic Music')}: {profile_label}"
+            )
         with cols[2]:
             if st.button(
                 tr("Cockpit Load Topic"),
@@ -283,8 +377,84 @@ def render_channels_tab(
                 st.session_state["video_subject"] = topic.get("topic", "")
                 st.session_state["preview_ready"] = False
                 st.session_state["loaded_topic_uid"] = topic.get("uid")
+                st.session_state["loaded_topic_id"] = topic_id
+                if profiles:
+                    from app.config import config
+
+                    config.ui["bgm_type"] = "profile_random"
+                    config.ui["bgm_profile"] = profiles[0]
                 st.toast(tr("Cockpit Topic Loaded"))
                 st.rerun()
+
+
+def render_option_cards(
+    label: str,
+    options: list[tuple[str, str]],
+    selected: str,
+    state_key: str,
+) -> str:
+    """Clickable option cards (VisualAI-style) backed by session state."""
+    option_values = [value for _, value in options]
+    if state_key not in st.session_state or st.session_state[state_key] not in option_values:
+        st.session_state[state_key] = selected if selected in option_values else option_values[0]
+
+    st.markdown(f'<p class="cockpit-card-group-label">{label}</p>', unsafe_allow_html=True)
+    cols = st.columns(len(options))
+    for index, (option_label, option_value) in enumerate(options):
+        with cols[index]:
+            active = st.session_state[state_key] == option_value
+            card_class = "cockpit-card active" if active else "cockpit-card"
+            st.markdown(
+                f'<div class="{card_class}"><span>{option_label}</span></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                option_label,
+                key=f"{state_key}_{option_value}",
+                use_container_width=True,
+                type="primary" if active else "secondary",
+            ):
+                st.session_state[state_key] = option_value
+
+    return str(st.session_state[state_key])
+
+
+def render_clip_diagnosis(
+    result: dict[str, Any],
+    tr: Callable[[str], str],
+) -> None:
+    """Post-render card with clip source diversity and repetition warnings."""
+    diagnosis = analyze_clip_materials(result.get("materials"))
+    if diagnosis["total_segments"] == 0:
+        return
+
+    with st.expander(tr("Cockpit Clip Diagnosis"), expanded=True):
+        metric_cols = st.columns(3)
+        with metric_cols[0]:
+            st.metric(tr("Cockpit Clip Total"), diagnosis["total_segments"])
+        with metric_cols[1]:
+            st.metric(tr("Cockpit Clip Unique"), diagnosis["unique_sources"])
+        with metric_cols[2]:
+            repeated_count = len(diagnosis["repeated_sources"])
+            st.metric(tr("Cockpit Clip Repeated"), repeated_count)
+
+        warning_labels = {
+            "no_materials": tr("Cockpit Warn No Materials"),
+            "repeated_sources": tr("Cockpit Warn Repeated Sources"),
+            "low_diversity": tr("Cockpit Warn Low Diversity"),
+            "partial_collector_job": tr("Cockpit Warn Partial Collector"),
+        }
+        for warning in diagnosis["warnings"]:
+            st.warning(warning_labels.get(warning, warning))
+
+        if diagnosis["repeated_sources"]:
+            st.caption(tr("Cockpit Repeated Detail"))
+            for path, count in sorted(
+                diagnosis["repeated_sources"].items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:8]:
+                st.text(f"×{count}  {os.path.basename(path) or path}")
 
 
 def _scan_disk_tasks(tasks_root: str, limit: int = 30) -> list[dict[str, Any]]:
@@ -470,6 +640,33 @@ COCKPIT_CSS = """
     border-color: #3b82f6;
     color: #fff;
     background: rgba(59, 130, 246, 0.15);
+}
+.cockpit-card-group-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 0.25rem 0 0.5rem 0;
+}
+.cockpit-card {
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 0.65rem 0.5rem;
+    text-align: center;
+    margin-bottom: 0.35rem;
+    color: #94a3b8;
+    font-size: 0.85rem;
+    min-height: 2.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.cockpit-card.active {
+    border-color: #3b82f6;
+    color: #e2e8f0;
+    background: rgba(59, 130, 246, 0.12);
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+.cockpit-card span {
+    line-height: 1.2;
 }
 </style>
 """

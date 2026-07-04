@@ -212,6 +212,27 @@
     "Cockpit Step Validate": "Validando provedores e parâmetros",
     "Cockpit Step Terms": "Gerando palavras-chave",
     "Cockpit Step TTS": "Sintetizando voz",
-    "Cockpit Step Running": "Executando pipeline de render"
+    "Cockpit Step Running": "Executando pipeline de render",
+    "Cockpit More Video Sources": "Mais fontes de vídeo",
+    "Cockpit Use Alternative Source": "Usar esta fonte",
+    "Cockpit Active Source": "Fonte ativa",
+    "Cockpit Topics Filter": "Filtrar tópicos",
+    "Cockpit Topics Pending": "Pendentes",
+    "Cockpit Topics Used": "Usados",
+    "Cockpit Topics All": "Todos",
+    "Cockpit All Topics": "Todos os tópicos",
+    "Cockpit Used Topics": "Tópicos usados",
+    "Cockpit Topic Category": "Categoria",
+    "Cockpit Topic Status": "Status",
+    "Cockpit Topic Music": "Música",
+    "Cockpit Clip Diagnosis": "Diagnóstico de clipes",
+    "Cockpit Clip Total": "Segmentos",
+    "Cockpit Clip Unique": "Fontes únicas",
+    "Cockpit Clip Repeated": "Repetidas",
+    "Cockpit Warn No Materials": "Nenhum clipe registrado no resultado.",
+    "Cockpit Warn Repeated Sources": "Há clipes com a mesma fonte — risco de repetição visual.",
+    "Cockpit Warn Low Diversity": "Pouca diversidade de fontes em relação ao total de segmentos.",
+    "Cockpit Warn Partial Collector": "Collector retornou menos clipes que o alvo do job.",
+    "Cockpit Repeated Detail": "Fontes repetidas:"
   }
 }
