@@ -809,6 +809,7 @@ with tab_create:
     params.match_materials_to_script = bool(
         st.session_state.get("match_materials_to_script", False)
     )
+    params.script_mode = st.session_state.get("script_mode", "auto")
     uploaded_files = []
     uploaded_audio_file = None
 
@@ -871,33 +872,132 @@ with tab_create:
                 else:
                     params.custom_system_prompt = ""
 
+                script_mode_options = [
+                    (tr("Script Mode Auto"), "auto"),
+                    (tr("Script Mode Verbatim"), "verbatim"),
+                    (tr("Script Mode Polish"), "polish"),
+                ]
+                saved_script_mode = st.session_state.get("script_mode", "auto")
+                script_mode_values = [value for _, value in script_mode_options]
+                if saved_script_mode not in script_mode_values:
+                    saved_script_mode = "auto"
+                params.script_mode = st.radio(
+                    tr("Script Mode"),
+                    options=script_mode_values,
+                    format_func=lambda value: next(
+                        label for label, opt in script_mode_options if opt == value
+                    ),
+                    index=script_mode_values.index(saved_script_mode),
+                    horizontal=True,
+                    key="script_mode",
+                )
+
+            params.video_script = st.text_area(
+                tr("Video Script"), value=st.session_state["video_script"], height=280
+            )
+            active_channel_config = {}
+            active_slug = st.session_state.get("active_channel")
+            if active_slug:
+                try:
+                    active_channel_config = cockpit.load_channel_config(active_slug)
+                except FileNotFoundError:
+                    active_channel_config = {}
+            cockpit.render_scene_breakdown(
+                params.video_script,
+                active_channel_config.get("scene_structure"),
+                tr,
+            )
+            params.title_enabled = st.checkbox(
+                tr("Title Overlay Enabled"),
+                value=st.session_state.get(
+                    "title_enabled",
+                    active_channel_config.get("title_enabled", False),
+                ),
+                key="title_enabled",
+            )
+            if params.title_enabled:
+                params.title_text = st.text_input(
+                    tr("Title Overlay Text"),
+                    value=st.session_state.get(
+                        "title_text",
+                        active_channel_config.get("title_text", params.video_subject),
+                    ),
+                    key="title_text",
+                ).strip()
+                params.title_duration = st.slider(
+                    tr("Title Overlay Duration"),
+                    min_value=1.0,
+                    max_value=8.0,
+                    value=float(
+                        st.session_state.get(
+                            "title_duration",
+                            active_channel_config.get("title_duration", 3.0),
+                        )
+                    ),
+                    step=0.5,
+                    key="title_duration",
+                )
+            else:
+                params.title_text = ""
+
             if st.button(
                 tr("Generate Video Script and Keywords"), key="auto_generate_script"
             ):
                 with st.spinner(tr("Generating Video Script and Keywords")):
-                    script = llm.generate_script(
-                        video_subject=params.video_subject,
-                        language=params.video_language,
-                        paragraph_number=params.paragraph_number,
-                        video_script_prompt=params.video_script_prompt,
-                        custom_system_prompt=params.custom_system_prompt,
-                    )
-                    terms = llm.generate_terms(
-                        params.video_subject,
-                        script,
-                        amount=8 if params.match_materials_to_script else 5,
-                        match_script_order=params.match_materials_to_script,
-                    )
-                    if "Error: " in script:
-                        st.error(tr(script))
-                    elif "Error: " in terms:
-                        st.error(tr(terms))
+                    if params.script_mode == "polish":
+                        if not params.video_script.strip():
+                            st.error(tr("Script Mode Polish Brief Required"))
+                        else:
+                            script = llm.polish_script(
+                                brief=params.video_script.strip(),
+                                video_subject=params.video_subject,
+                                duration_seconds=max(30, params.paragraph_number * 25),
+                                language=params.video_language or "",
+                            )
+                            terms = llm.generate_terms(
+                                params.video_subject,
+                                script,
+                                amount=8 if params.match_materials_to_script else 5,
+                                match_script_order=params.match_materials_to_script,
+                            )
+                            if "Error: " in terms:
+                                st.error(tr(terms))
+                            else:
+                                st.session_state["video_script"] = script
+                                st.session_state["video_terms"] = ", ".join(terms)
+                    elif params.script_mode == "verbatim" and params.video_script.strip():
+                        script = params.video_script.strip()
+                        terms = llm.generate_terms(
+                            params.video_subject,
+                            script,
+                            amount=8 if params.match_materials_to_script else 5,
+                            match_script_order=params.match_materials_to_script,
+                        )
+                        if "Error: " in terms:
+                            st.error(tr(terms))
+                        else:
+                            st.session_state["video_terms"] = ", ".join(terms)
                     else:
-                        st.session_state["video_script"] = script
-                        st.session_state["video_terms"] = ", ".join(terms)
-            params.video_script = st.text_area(
-                tr("Video Script"), value=st.session_state["video_script"], height=280
-            )
+                        script = llm.generate_script(
+                            video_subject=params.video_subject,
+                            language=params.video_language,
+                            paragraph_number=params.paragraph_number,
+                            video_script_prompt=params.video_script_prompt,
+                            custom_system_prompt=params.custom_system_prompt,
+                        )
+                        terms = llm.generate_terms(
+                            params.video_subject,
+                            script,
+                            amount=8 if params.match_materials_to_script else 5,
+                            match_script_order=params.match_materials_to_script,
+                        )
+                        if "Error: " in script:
+                            st.error(tr(script))
+                        elif "Error: " in terms:
+                            st.error(tr(terms))
+                        else:
+                            st.session_state["video_script"] = script
+                            st.session_state["video_terms"] = ", ".join(terms)
             if st.button(tr("Generate Video Keywords"), key="auto_generate_terms"):
                 if not params.video_script:
                     st.error(tr("Please Enter the Video Subject"))
@@ -1948,6 +2048,7 @@ with tab_create:
         video_files = result.get("videos", [])
         st.success(tr("Video Generation Completed"))
         cockpit.render_clip_diagnosis(result, tr)
+        cockpit.render_bgm_audit_warning(task_id, params.bgm_type or "", tr)
         st.session_state["preview_ready"] = False
         try:
             if video_files:

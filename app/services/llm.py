@@ -763,6 +763,46 @@ def generate_script(
     return final_script.strip()
 
 
+def polish_script(
+    brief: str,
+    video_subject: str = "",
+    duration_seconds: int = 60,
+    language: str = "",
+) -> str:
+    """Turn a rough brief into hook → body → CTA narration."""
+    brief = (brief or "").strip()
+    if not brief:
+        raise ValueError("empty polish output")
+
+    subject = (video_subject or "").strip()
+    lang_hint = language or "same language as the brief"
+    prompt = f"""
+You are a short-form video scriptwriter.
+
+Turn the creator brief below into a polished voiceover with:
+1) a provocative hook (1-2 sentences)
+2) a concise body with one concrete detail
+3) a single clear CTA
+
+Constraints:
+- Keep the same language as the brief ({lang_hint})
+- Target about {duration_seconds} seconds spoken (~{max(40, duration_seconds * 2)} words)
+- Do not use markdown, bullets, or scene labels
+- Preserve factual claims from the brief
+
+Subject context (optional): {subject or "none"}
+
+Brief:
+{brief}
+""".strip()
+
+    response = _generate_response(prompt=prompt)
+    polished = (response or "").replace("*", "").replace("#", "").strip()
+    if not polished:
+        raise ValueError("empty polish output")
+    return polished
+
+
 def generate_terms(
     video_subject: str,
     video_script: str,

@@ -46,5 +46,9 @@
   "music_profile_overrides": {},
   "topic_distribution": {},
   "match_materials_to_script": true,
-  "mode": "faceless"
+  "mode": "faceless",
+  "title_enabled": true,
+  "title_text": "Curiosidades do Japão",
+  "title_duration": 3.5,
+  "scene_structure": ["intro", "body", "cta"]
 }

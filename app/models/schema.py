@@ -1,6 +1,6 @@
 import warnings
 from enum import Enum
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 import pydantic
 from pydantic import BaseModel, Field
@@ -118,6 +118,8 @@ class VideoParams(BaseModel):
 
     video_subject: str
     video_script: str = ""  # Script used to generate the video
+    script_mode: Optional[Literal["auto", "verbatim", "polish"]] = None
+    script_brief: Optional[str] = None
     video_terms: Optional[str | list] = None  # Keywords used to generate the video
     video_aspect: Optional[VideoAspect] = VideoAspect.portrait.value
     video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random.value
@@ -158,6 +160,13 @@ class VideoParams(BaseModel):
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
+
+    title_enabled: bool = False
+    title_text: str = ""
+    title_duration: float = 3.0
+    title_background_overlay: bool = True
+    title_overlay_color: Optional[str] = "rgba(0,0,0,0.5)"
+    scene_structure: Optional[List[str]] = None
 
 
 class SubtitleRequest(BaseModel):

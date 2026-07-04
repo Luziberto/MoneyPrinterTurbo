@@ -35,6 +35,8 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import bgm as bgm_service
+from app.services import bgm_audit
+from app.services.title_overlay import apply_title_overlay
 from app.services.utils import video_effects
 from app.utils import file_security, utils
 
@@ -1080,6 +1082,8 @@ def generate_video(
             text_clips.append(clip)
         video_clip = CompositeVideoClip([video_clip, *text_clips])
 
+    video_clip = apply_title_overlay(video_clip, params)
+
     bgm_file = get_bgm_file(
         bgm_type=params.bgm_type,
         bgm_file=params.bgm_file,
@@ -1097,6 +1101,11 @@ def generate_video(
             audio_clip = CompositeAudioClip([audio_clip, bgm_clip])
         except Exception as e:
             logger.error(f"failed to add bgm: {str(e)}")
+            bgm_audit.record_bgm_failure(
+                output_file=output_file,
+                reason=str(e),
+                params=params,
+            )
 
     video_clip = video_clip.with_audio(audio_clip)
     # 显式沿用输入音频的采样率；如果取不到，再回退到 MoviePy 默认的 44100Hz。

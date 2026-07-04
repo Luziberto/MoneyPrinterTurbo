@@ -107,6 +107,11 @@ def apply_channel_defaults(slug: str) -> None:
     st.session_state["video_script_prompt"] = str(
         channel.get("video_script_prompt", "") or ""
     ).strip()
+    st.session_state["title_enabled"] = bool(channel.get("title_enabled", False))
+    st.session_state["title_text"] = str(
+        channel.get("title_text", "") or channel.get("name", "") or ""
+    ).strip()
+    st.session_state["title_duration"] = float(channel.get("title_duration", 3.0) or 3.0)
 
     config_ui_keys = {
         "video_source": channel.get("video_source", "collector"),
@@ -483,6 +488,40 @@ def render_clip_diagnosis(
                 reverse=True,
             )[:8]:
                 st.text(f"×{count}  {os.path.basename(path) or path}")
+
+
+def render_scene_breakdown(
+    script: str,
+    structure: list[str] | None,
+    tr: Callable[[str], str],
+) -> None:
+    from app.services.scene_parser import parse_script_scenes
+
+    scenes = parse_script_scenes(script, structure or None)
+    if not scenes:
+        return
+    with st.expander(tr("Cockpit Scene Breakdown"), expanded=False):
+        for index, scene in enumerate(scenes, start=1):
+            role = scene.get("role", "scene")
+            st.markdown(f"**{index}. {role.upper()}**")
+            st.caption(scene.get("text", ""))
+
+
+def render_bgm_audit_warning(
+    task_id: str,
+    bgm_type: str,
+    tr: Callable[[str], str],
+) -> None:
+    from app.services.bgm_audit import read_bgm_failure
+
+    if not (bgm_type or "").strip():
+        return
+    failure = read_bgm_failure(task_id)
+    if not failure:
+        return
+    st.warning(
+        f"{tr('Cockpit BGM Skipped')}: {failure.get('reason', tr('Cockpit BGM Unknown Reason'))}"
+    )
 
 
 def _scan_disk_tasks(tasks_root: str, limit: int = 30) -> list[dict[str, Any]]:

@@ -57,6 +57,10 @@ CHANNEL_DEFAULTS: dict[str, Any] = {
     "topic_distribution": {},
     "match_materials_to_script": False,
     "mode": "faceless",
+    "title_enabled": False,
+    "title_text": "",
+    "title_duration": 3.0,
+    "scene_structure": ["intro", "body", "cta"],
 }
 
 

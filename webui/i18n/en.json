@@ -284,6 +284,17 @@
     "Cockpit Task Video": "Video",
     "Cockpit Remove Task": "Remove",
     "Cockpit Task Removed": "Task removed from memory",
-    "Cockpit No Memory Tasks": "No in-memory tasks"
+    "Cockpit No Memory Tasks": "No in-memory tasks",
+    "Script Mode": "Script mode",
+    "Script Mode Auto": "Auto",
+    "Script Mode Verbatim": "Verbatim",
+    "Script Mode Polish": "Polish brief",
+    "Script Mode Polish Brief Required": "Polish mode requires a brief in the script field.",
+    "Title Overlay Enabled": "Opening title overlay",
+    "Title Overlay Text": "Title text",
+    "Title Overlay Duration": "Title duration (s)",
+    "Cockpit Scene Breakdown": "Script scenes",
+    "Cockpit BGM Skipped": "Background music was not applied",
+    "Cockpit BGM Unknown Reason": "unknown reason"
   }
 }

@@ -260,6 +260,17 @@
     "Cockpit Task Video": "Vídeo",
     "Cockpit Remove Task": "Remover",
     "Cockpit Task Removed": "Tarefa removida da memória",
-    "Cockpit No Memory Tasks": "Nenhuma tarefa em memória"
+    "Cockpit No Memory Tasks": "Nenhuma tarefa em memória",
+    "Script Mode": "Modo do roteiro",
+    "Script Mode Auto": "Automático",
+    "Script Mode Verbatim": "Literal",
+    "Script Mode Polish": "Polir brief",
+    "Script Mode Polish Brief Required": "Modo polir exige um brief no campo de roteiro.",
+    "Title Overlay Enabled": "Título no início do vídeo",
+    "Title Overlay Text": "Texto do título",
+    "Title Overlay Duration": "Duração do título (s)",
+    "Cockpit Scene Breakdown": "Cenas do roteiro",
+    "Cockpit BGM Skipped": "A música de fundo não foi aplicada",
+    "Cockpit BGM Unknown Reason": "motivo desconhecido"
   }
 }
