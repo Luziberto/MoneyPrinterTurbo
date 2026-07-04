@@ -807,12 +807,6 @@ with tab_create:
     uploaded_files = []
     uploaded_audio_file = None
 
-    cockpit.render_provider_center(
-        config.ui.get("video_source", config.app.get("video_source", "pexels")),
-        config.ui.get("voice_name", ""),
-        tr,
-    )
-
     with left_panel:
         with st.container(border=True):
             st.write(tr("Video Script Settings"))
@@ -1787,6 +1781,21 @@ with tab_create:
                     st.success(tr("Coverr API Key deleted successfully"))
 
     st.divider()
+    render_blockers = cockpit.list_render_blockers(
+        params.video_source,
+        params.voice_name,
+        tr,
+    )
+    if render_blockers:
+        st.warning(
+            tr("Cockpit Render Blocked") + "\n\n"
+            + "\n".join(f"- {item}" for item in render_blockers)
+        )
+    cockpit.render_provider_center(
+        params.video_source,
+        params.voice_name,
+        tr,
+    )
     preview_col, render_col = st.columns(2)
     with preview_col:
         include_preview_audio = st.checkbox(

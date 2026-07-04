@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -43,6 +43,28 @@ class TestCockpitHelpers(unittest.TestCase):
         diagnosis = cockpit.analyze_clip_materials(["a.mp4", "b.mp4"])
         self.assertEqual(diagnosis["unique_sources"], 2)
         self.assertEqual(diagnosis["warnings"], [])
+
+    @patch.object(cockpit, "_ffmpeg_readiness", return_value=("Cockpit Status Ready", "ffmpeg"))
+    @patch.object(cockpit, "_tts_readiness", return_value=("Cockpit Status Ready", "voice"))
+    @patch.object(cockpit, "_llm_readiness", return_value=("Cockpit Status Ready", "openai"))
+    @patch.object(
+        cockpit,
+        "_collector_readiness",
+        return_value=("Cockpit Status Blocked", "Cockpit Collector No URL"),
+    )
+    def test_list_render_blockers_flags_collector_without_url(
+        self,
+        _collector,
+        _llm,
+        _tts,
+        _ffmpeg,
+    ):
+        blockers = cockpit.list_render_blockers(
+            "collector",
+            "pt-BR-AntonioNeural-Male",
+            lambda key: key,
+        )
+        self.assertEqual(blockers, ["Collector — Cockpit Collector No URL"])
 
 
 if __name__ == "__main__":

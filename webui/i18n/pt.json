@@ -233,6 +233,7 @@
     "Cockpit Warn Repeated Sources": "Há clipes com a mesma fonte — risco de repetição visual.",
     "Cockpit Warn Low Diversity": "Pouca diversidade de fontes em relação ao total de segmentos.",
     "Cockpit Warn Partial Collector": "Collector retornou menos clipes que o alvo do job.",
-    "Cockpit Repeated Detail": "Fontes repetidas:"
+    "Cockpit Repeated Detail": "Fontes repetidas:",
+    "Cockpit Render Blocked": "Corrija antes de gerar:"
   }
 }

@@ -256,10 +256,39 @@ def _bgm_readiness(tr: Callable[[str], str]) -> tuple[str, str]:
     return tr("Cockpit Status Skipped"), tr("Cockpit BGM No Profiles")
 
 
+def list_render_blockers(
+    video_source: str,
+    voice_name: str,
+    tr: Callable[[str], str],
+) -> list[str]:
+    """Return actionable blocker messages for preview/render."""
+    blockers: list[str] = []
+
+    llm_status, llm_detail = _llm_readiness(tr)
+    if llm_status == tr("Cockpit Status Blocked"):
+        blockers.append(f"LLM — {llm_detail}")
+
+    collector_status, collector_detail = _collector_readiness(video_source, tr)
+    if collector_status == tr("Cockpit Status Blocked"):
+        blockers.append(f"Collector — {collector_detail}")
+
+    tts_status, tts_detail = _tts_readiness(voice_name, tr)
+    if tts_status == tr("Cockpit Status Blocked"):
+        blockers.append(f"TTS — {tts_detail}")
+
+    ffmpeg_status, ffmpeg_detail = _ffmpeg_readiness(tr)
+    if ffmpeg_status == tr("Cockpit Status Blocked"):
+        blockers.append(f"FFmpeg — {ffmpeg_detail}")
+
+    return blockers
+
+
 def render_provider_center(
     video_source: str,
     voice_name: str,
     tr: Callable[[str], str],
+    *,
+    expanded: bool | None = None,
 ) -> None:
     """Readiness grid inspired by Cenara provider center."""
     checks = [
@@ -269,7 +298,10 @@ def render_provider_center(
         (tr("Cockpit Provider FFmpeg"), *_ffmpeg_readiness(tr)),
         (tr("Cockpit Provider BGM"), *_bgm_readiness(tr)),
     ]
-    with st.expander(tr("Cockpit Provider Center"), expanded=True):
+    if expanded is None:
+        blocked_status = tr("Cockpit Status Blocked")
+        expanded = any(status == blocked_status for _, status, _ in checks)
+    with st.expander(tr("Cockpit Provider Center"), expanded=expanded):
         cols = st.columns(len(checks))
         for index, (label, status, detail) in enumerate(checks):
             with cols[index % len(cols)]:
@@ -403,11 +435,6 @@ def render_option_cards(
     for index, (option_label, option_value) in enumerate(options):
         with cols[index]:
             active = st.session_state[state_key] == option_value
-            card_class = "cockpit-card active" if active else "cockpit-card"
-            st.markdown(
-                f'<div class="{card_class}"><span>{option_label}</span></div>',
-                unsafe_allow_html=True,
-            )
             if st.button(
                 option_label,
                 key=f"{state_key}_{option_value}",
@@ -646,27 +673,10 @@ COCKPIT_CSS = """
     font-weight: 600;
     margin: 0.25rem 0 0.5rem 0;
 }
-.cockpit-card {
-    border: 1px solid #334155;
+.cockpit-card-group-label + div[data-testid="stHorizontalBlock"] button {
+    min-height: 2.75rem;
     border-radius: 0.75rem;
-    padding: 0.65rem 0.5rem;
-    text-align: center;
-    margin-bottom: 0.35rem;
-    color: #94a3b8;
-    font-size: 0.85rem;
-    min-height: 2.5rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.cockpit-card.active {
-    border-color: #3b82f6;
-    color: #e2e8f0;
-    background: rgba(59, 130, 246, 0.12);
-    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
-}
-.cockpit-card span {
-    line-height: 1.2;
+    font-weight: 600;
 }
 </style>
 """
