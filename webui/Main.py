@@ -26,6 +26,11 @@ from app.models.schema import (
 from app.services import bgm as bgm_service
 from app.services import llm, voice
 from app.services import task as tm
+from app.services.runtime_limits import (
+    GenerationAlreadyRunningError,
+    generation_lock_status,
+    single_flight_generation_lock,
+)
 from app.utils import utils
 from webui import cockpit
 
@@ -1791,6 +1796,11 @@ with tab_create:
             tr("Cockpit Render Blocked") + "\n\n"
             + "\n".join(f"- {item}" for item in render_blockers)
         )
+    active_lock = generation_lock_status()
+    if active_lock:
+        st.error(
+            f"{tr('Cockpit Generation Locked')}: `{active_lock.get('task_id', 'unknown')}`"
+        )
     cockpit.render_provider_center(
         params.video_source,
         params.voice_name,
@@ -1919,7 +1929,14 @@ with tab_create:
             st.toast(tr("Generating Video"))
             logger.info(tr("Start Generating Video"))
             logger.info(utils.to_json(params))
-            result = tm.start(task_id=task_id, params=params)
+            try:
+                with single_flight_generation_lock(task_id):
+                    result = tm.start(task_id=task_id, params=params)
+            except GenerationAlreadyRunningError as exc:
+                status.update(state="error")
+                st.error(f"{tr('Cockpit Generation Locked')}: `{exc}`")
+                scroll_to_bottom()
+                st.stop()
             if not result or "videos" not in result:
                 status.update(state="error")
                 st.error(tr("Video Generation Failed"))

@@ -18,6 +18,7 @@ from app.models.schema import (
     VideoConcatMode,
 )
 from app.services import collector_client
+from app.services.clip_reranker import get_reranker_kind, rerank_collector_clips
 from app.utils import file_security, utils
 
 # Thread-safe counter for API key rotation
@@ -673,6 +674,20 @@ def download_videos_from_collector(
                 f"minimum required is {min_acceptable_clips}"
             ),
         )
+
+    if get_reranker_kind() != "none":
+        grouped: dict[str, list[CollectorSelectedClip]] = {}
+        for clip in staged_clips:
+            keyword = (clip.matched_keyword or "").strip() or "__default__"
+            grouped.setdefault(keyword, []).append(clip)
+        staged_clips = []
+        for keyword, group in grouped.items():
+            staged_clips.extend(
+                rerank_collector_clips(
+                    group,
+                    keyword="" if keyword == "__default__" else keyword,
+                )
+            )
 
     logger.success(f"staged {len(staged_clips)} collector clips")
     return staged_clips

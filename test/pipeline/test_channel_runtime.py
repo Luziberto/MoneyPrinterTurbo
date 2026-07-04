@@ -17,6 +17,7 @@ class TestChannelRuntime(unittest.TestCase):
         config = load_channel("japao")
         self.assertTrue(config["match_materials_to_script"])
         self.assertEqual(config["slug"], "japao")
+        self.assertEqual(config.get("mode"), "faceless")
 
     def test_build_video_payload_forwards_match_materials(self):
         config = {

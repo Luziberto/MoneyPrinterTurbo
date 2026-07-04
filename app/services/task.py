@@ -10,6 +10,7 @@ from app.models import const
 from app.models.schema import CollectorSelectedClip, VideoConcatMode, VideoParams
 from app.services import collector_client, llm, material, subtitle, twelvelabs, video, voice, upload_post
 from app.services import state as sm
+from app.services.runtime_limits import cap_thread_count
 from app.utils import utils
 
 
@@ -286,6 +287,7 @@ def generate_final_videos(
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
+    params.n_threads = cap_thread_count(params.n_threads)
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
 
     # 1. Generate script

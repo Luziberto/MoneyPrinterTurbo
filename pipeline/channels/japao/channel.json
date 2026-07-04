@@ -45,5 +45,6 @@
   "category_overrides": {},
   "music_profile_overrides": {},
   "topic_distribution": {},
-  "match_materials_to_script": true
+  "match_materials_to_script": true,
+  "mode": "faceless"
 }

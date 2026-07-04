@@ -56,6 +56,7 @@ CHANNEL_DEFAULTS: dict[str, Any] = {
     "music_profile_overrides": {},
     "topic_distribution": {},
     "match_materials_to_script": False,
+    "mode": "faceless",
 }
 
 
@@ -118,6 +119,13 @@ def load_channel(slug: str) -> dict[str, Any]:
     config = deepcopy(CHANNEL_DEFAULTS)
     config.update(raw_config)
     _normalize_channel_collections(config)
+
+    try:
+        from app.services.modes import apply_mode_defaults
+
+        config = apply_mode_defaults(config)
+    except ImportError:
+        pass
 
     prompt_path = base / SCRIPT_PROMPT_FILENAME
     raw_prompt = ""

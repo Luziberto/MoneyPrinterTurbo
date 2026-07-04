@@ -177,6 +177,7 @@ def render_channel_toolbar(
                 st.caption(
                     f"**{channel.get('name', selected)}** · "
                     f"{channel.get('video_source', '—')} · "
+                    f"{channel.get('mode', 'faceless')} · "
                     f"{channel.get('target_duration', '—')}"
                 )
             except FileNotFoundError:
@@ -515,47 +516,153 @@ def _scan_disk_tasks(tasks_root: str, limit: int = 30) -> list[dict[str, Any]]:
     return rows
 
 
+def _task_state_label(state: Any, tr: Callable[[str], str]) -> str:
+    from app.models import const
+
+    mapping = {
+        const.TASK_STATE_PROCESSING: tr("Cockpit Task Running"),
+        const.TASK_STATE_COMPLETE: tr("Cockpit Task Complete"),
+        const.TASK_STATE_FAILED: tr("Cockpit Task Failed"),
+    }
+    return mapping.get(state, tr("Cockpit Task Unknown"))
+
+
+def _summarize_task_states(tasks: list[dict[str, Any]], tr: Callable[[str], str]) -> dict[str, int]:
+    from app.models import const
+
+    summary = {
+        tr("Cockpit Task Running"): 0,
+        tr("Cockpit Task Complete"): 0,
+        tr("Cockpit Task Failed"): 0,
+        tr("Cockpit Task Unknown"): 0,
+    }
+    for task in tasks:
+        label = _task_state_label(task.get("state"), tr)
+        summary[label] = summary.get(label, 0) + 1
+    return {label: count for label, count in summary.items() if count > 0}
+
+
+def render_runtime_panel(tr: Callable[[str], str]) -> None:
+    from app.services.runtime_limits import (
+        clear_stale_generation_lock,
+        generation_lock_status,
+        get_runtime_limits,
+    )
+
+    limits = get_runtime_limits()
+    lock = generation_lock_status()
+    cols = st.columns(4)
+    with cols[0]:
+        st.metric(tr("Cockpit Runtime Threads"), limits.max_threads)
+    with cols[1]:
+        st.metric(tr("Cockpit Runtime Remote MB"), limits.max_remote_video_mb)
+    with cols[2]:
+        st.metric(tr("Cockpit Runtime Downloads"), limits.max_downloads_per_task)
+    with cols[3]:
+        lock_label = tr("Cockpit Runtime Lock Free")
+        if lock:
+            lock_label = tr("Cockpit Runtime Lock Busy")
+        st.metric(tr("Cockpit Runtime Lock"), lock_label)
+
+    if lock:
+        st.warning(
+            f"{tr('Cockpit Runtime Lock Active')}: `{lock.get('task_id', 'unknown')}`"
+        )
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button(tr("Cockpit Clear Stale Lock"), key="cockpit_clear_stale_lock"):
+            if clear_stale_generation_lock():
+                st.toast(tr("Cockpit Stale Lock Cleared"))
+            else:
+                st.toast(tr("Cockpit No Stale Lock"))
+            st.rerun()
+    with action_cols[1]:
+        if st.button(tr("Cockpit Force Clear Lock"), key="cockpit_force_clear_lock"):
+            if clear_stale_generation_lock(force=True):
+                st.toast(tr("Cockpit Lock Force Cleared"))
+            else:
+                st.toast(tr("Cockpit No Lock To Clear"))
+            st.rerun()
+
+
 def render_tasks_tab(
     tasks_root: str,
     tr: Callable[[str], str],
     open_folder_cb: Callable[[str], None],
 ) -> None:
+    from app.models import const
     from app.services import state as sm
 
     st.subheader(tr("Cockpit Tab Tasks"))
+    render_runtime_panel(tr)
 
-    memory_tasks, total = sm.state.get_all_tasks(page=1, page_size=50)
-    disk_tasks = _scan_disk_tasks(tasks_root)
+    memory_tasks, total = sm.state.get_all_tasks(page=1, page_size=100)
+    disk_tasks = _scan_disk_tasks(tasks_root, limit=100)
+    disk_by_id = {row["task_id"]: row for row in disk_tasks}
 
     if memory_tasks:
-        st.write(f"**{tr('Cockpit Memory Tasks')}** ({total})")
+        summary = _summarize_task_states(memory_tasks, tr)
+        if summary:
+            metric_cols = st.columns(len(summary))
+            for index, (label, count) in enumerate(summary.items()):
+                with metric_cols[index % len(metric_cols)]:
+                    st.metric(label, count)
+
+        table_rows = []
         for task in memory_tasks:
-            task_id = task.get("task_id", "")
-            state = task.get("state")
-            progress = task.get("progress", 0)
+            task_id = str(task.get("task_id", ""))
+            disk = disk_by_id.get(task_id, {})
+            table_rows.append(
+                {
+                    tr("Cockpit Task Id"): task_id[:8] + "…",
+                    tr("Cockpit Task State"): _task_state_label(task.get("state"), tr),
+                    tr("Cockpit Task Progress"): f"{task.get('progress', 0)}%",
+                    tr("Cockpit Task Updated"): disk.get("updated", "—"),
+                    tr("Cockpit Task Video"): "✓" if disk.get("has_video") else "—",
+                }
+            )
+        st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+        st.write(f"**{tr('Cockpit Memory Tasks')}** ({total})")
+        for task in memory_tasks[:30]:
+            task_id = str(task.get("task_id", ""))
+            disk = disk_by_id.get(task_id, {})
             cols = st.columns([3, 1, 1, 1])
             with cols[0]:
-                st.write(f"`{task_id}` · {progress}%")
+                st.write(
+                    f"`{task_id}` · {_task_state_label(task.get('state'), tr)} · "
+                    f"{task.get('progress', 0)}%"
+                )
             with cols[1]:
                 if st.button(tr("Open Task Folder"), key=f"open_mem_{task_id}"):
                     open_folder_cb(task_id)
             with cols[2]:
-                video = task.get("videos", [None])[0] if task.get("videos") else None
-                if video and os.path.isfile(str(video)):
+                video_path = disk.get("video_path") or (
+                    task.get("videos", [None])[0] if task.get("videos") else None
+                )
+                if video_path and os.path.isfile(str(video_path)):
                     st.download_button(
                         tr("Download Video"),
-                        data=open(video, "rb").read(),
-                        file_name=os.path.basename(str(video)),
+                        data=open(video_path, "rb").read(),
+                        file_name=os.path.basename(str(video_path)),
                         key=f"dl_mem_{task_id}",
                     )
+            with cols[3]:
+                if task.get("state") != const.TASK_STATE_PROCESSING:
+                    if st.button(tr("Cockpit Remove Task"), key=f"rm_mem_{task_id}"):
+                        sm.state.delete_task(task_id)
+                        st.toast(tr("Cockpit Task Removed"))
+                        st.rerun()
+    else:
+        st.info(tr("Cockpit No Memory Tasks"))
 
     st.divider()
-    st.write(f"**{tr('Cockpit Disk Tasks')}**")
+    st.write(f"**{tr('Cockpit Disk Tasks')}** ({len(disk_tasks)})")
     if not disk_tasks:
         st.info(tr("Cockpit No Tasks"))
         return
 
-    for row in disk_tasks:
+    for row in disk_tasks[:30]:
         cols = st.columns([3, 1, 1])
         with cols[0]:
             label = row["task_id"]
