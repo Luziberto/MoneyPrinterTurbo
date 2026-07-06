@@ -46,7 +46,13 @@ def generate_video_terms(request: Request, body: VideoTermsRequest):
         amount=body.amount,
         match_script_order=body.match_materials_to_script,
     )
-    response = {"video_terms": video_terms}
+    if isinstance(video_terms, str):
+        response = {"video_terms": video_terms}
+    else:
+        response = {
+            "video_terms": [keyword.model_dump() for keyword in video_terms.keywords],
+            "has_explicit_weights": video_terms.has_explicit_weights,
+        }
     return utils.get_response(200, response)
 
 

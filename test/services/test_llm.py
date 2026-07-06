@@ -115,7 +115,7 @@ class TestScriptPromptOptions(unittest.TestCase):
 
         def fake_generate_response(prompt):
             captured["prompt"] = prompt
-            return '["opening city", "middle office", "final sunset"]'
+            return '[{"term": "opening city", "weight": 1.0}, {"term": "middle office", "weight": 0.85}, {"term": "final sunset", "weight": 0.7}]'
 
         with patch.object(llm, "_generate_response", side_effect=fake_generate_response):
             result = llm.generate_terms(
@@ -125,9 +125,36 @@ class TestScriptPromptOptions(unittest.TestCase):
                 match_script_order=True,
             )
 
-        self.assertEqual(result, ["opening city", "middle office", "final sunset"])
+        self.assertEqual(
+            [keyword.model_dump() for keyword in result.keywords],
+            [
+                {"term": "opening city", "weight": 1.0},
+                {"term": "middle office", "weight": 0.85},
+                {"term": "final sunset", "weight": 0.7},
+            ],
+        )
+        self.assertTrue(result.has_explicit_weights)
         self.assertIn("chronological stock-video search terms", captured["prompt"])
         self.assertIn("same order as the script narration", captured["prompt"])
+        self.assertIn('"weight"', captured["prompt"])
+
+    def test_generate_terms_accepts_legacy_string_array_response(self):
+        def fake_generate_response(prompt):
+            return '["opening city", "middle office", "final sunset"]'
+
+        with patch.object(llm, "_generate_response", side_effect=fake_generate_response):
+            result = llm.generate_terms(
+                video_subject="startup story",
+                video_script="First city. Then office. Finally sunset.",
+                amount=3,
+                match_script_order=False,
+            )
+
+        self.assertFalse(result.has_explicit_weights)
+        self.assertEqual(
+            [keyword.term for keyword in result.keywords],
+            ["opening city", "middle office", "final sunset"],
+        )
 
     def test_video_script_request_rejects_invalid_advanced_options(self):
         """
@@ -797,6 +824,321 @@ class TestLiteLLMProvider(unittest.TestCase):
 
         self.assertIn("Error:", result)
         self.assertIn("g4f package is not installed by default", result)
+
+
+class TestAnthropicProvider(unittest.TestCase):
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+
+    def _use_anthropic_provider(self, model_name="claude-sonnet-4-5-20250929"):
+        config.app["llm_provider"] = "anthropic"
+        config.app["anthropic_model_name"] = model_name
+        config.app["anthropic_api_key"] = "sk-ant-test"
+
+    def test_anthropic_provider_returns_normalized_text(self):
+        self._use_anthropic_provider()
+
+        fake_litellm = types.SimpleNamespace()
+
+        def _completion(**kwargs):
+            self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4-5-20250929")
+            self.assertEqual(kwargs["api_key"], "sk-ant-test")
+            message = types.SimpleNamespace(content="hello\nworld")
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+        fake_litellm.completion = _completion
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("Say hello")
+
+        self.assertEqual(result, "helloworld")
+
+    def test_anthropic_provider_requires_api_key(self):
+        self._use_anthropic_provider()
+        config.app.pop("anthropic_api_key", None)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            result = llm._generate_response("test")
+
+        self.assertIn("Error:", result)
+        self.assertIn("api_key is not set", result)
+
+    def test_anthropic_litellm_model_id_adds_prefix(self):
+        self.assertEqual(
+            llm._anthropic_litellm_model_id("claude-sonnet-4-5-20250929"),
+            "anthropic/claude-sonnet-4-5-20250929",
+        )
+        self.assertEqual(
+            llm._anthropic_litellm_model_id(
+                "anthropic/claude-sonnet-4-5-20250929"
+            ),
+            "anthropic/claude-sonnet-4-5-20250929",
+        )
+
+
+class TestBedrockProvider(unittest.TestCase):
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+
+    def _use_bedrock_provider(
+        self,
+        model_name="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        region="us-east-1",
+    ):
+        config.app["llm_provider"] = "bedrock"
+        config.app["bedrock_model_name"] = model_name
+        config.app["bedrock_region"] = region
+        config.app.pop("bedrock_api_key", None)
+
+    def test_bedrock_provider_returns_normalized_text(self):
+        self._use_bedrock_provider()
+
+        fake_litellm = types.SimpleNamespace()
+
+        def _completion(**kwargs):
+            self.assertEqual(
+                kwargs["model"],
+                f"bedrock/{llm.DEFAULT_BEDROCK_MODEL}",
+            )
+            self.assertEqual(kwargs["aws_region_name"], "us-east-1")
+            self.assertEqual(
+                kwargs["messages"], [{"role": "user", "content": "Say hello"}]
+            )
+            self.assertTrue(kwargs["drop_params"])
+            message = types.SimpleNamespace(content="hello\nworld")
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+        fake_litellm.completion = _completion
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("Say hello")
+
+        self.assertEqual(result, "helloworld")
+
+    def test_bedrock_provider_requires_model_name(self):
+        self._use_bedrock_provider(model_name="")
+
+        result = llm._generate_response("test")
+
+        self.assertIn("Error:", result)
+        self.assertIn("model_name is not set", result)
+
+    def test_bedrock_provider_handles_empty_response(self):
+        self._use_bedrock_provider()
+
+        fake_litellm = types.SimpleNamespace(
+            completion=lambda **kwargs: types.SimpleNamespace(choices=[])
+        )
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("test")
+
+        self.assertIn("Error:", result)
+        self.assertIn("returned empty response", result)
+
+    def test_bedrock_uses_config_credentials_when_set(self):
+        self._use_bedrock_provider()
+        config.app["bedrock_aws_access_key_id"] = "AKIA_TEST"
+        config.app["bedrock_aws_secret_access_key"] = "secret"
+        config.app["bedrock_aws_session_token"] = "token"
+
+        captured = {}
+
+        def _completion(**kwargs):
+            captured.update(kwargs)
+            message = types.SimpleNamespace(content="ok")
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+        fake_litellm = types.SimpleNamespace(completion=_completion)
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("test")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(captured["aws_access_key_id"], "AKIA_TEST")
+        self.assertEqual(captured["aws_secret_access_key"], "secret")
+        self.assertEqual(captured["aws_session_token"], "token")
+
+    def test_bedrock_uses_api_key_bearer_token_when_set(self):
+        self._use_bedrock_provider()
+        config.app["bedrock_api_key"] = "ABSK_test_bearer_token"
+
+        captured = {}
+
+        def _completion(**kwargs):
+            captured.update(kwargs)
+            message = types.SimpleNamespace(content="ok")
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+        fake_litellm = types.SimpleNamespace(completion=_completion)
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("test")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(captured["api_key"], "ABSK_test_bearer_token")
+        self.assertNotIn("aws_access_key_id", captured)
+
+    def test_bedrock_litellm_model_id_adds_prefix(self):
+        self.assertEqual(
+            llm._bedrock_litellm_model_id("anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        )
+        self.assertEqual(
+            llm._bedrock_litellm_model_id(
+                "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"
+            ),
+            "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        )
+
+    def test_bedrock_provider_normalizes_provider_case(self):
+        self._use_bedrock_provider()
+        config.app["llm_provider"] = "Bedrock"
+
+        fake_litellm = types.SimpleNamespace(
+            completion=lambda **kwargs: types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="ok")
+                    )
+                ]
+            )
+        )
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("test")
+
+        self.assertEqual(result, "ok")
+
+    def test_bedrock_rejects_access_key_in_bearer_field(self):
+        self._use_bedrock_provider()
+        config.app["bedrock_api_key"] = "AKIAEXAMPLEKEY"
+
+        result = llm._generate_response("test")
+
+        self.assertIn("Error:", result)
+        self.assertIn("looks like an AWS Access Key", result)
+
+    def test_bedrock_ignores_invalid_bearer_and_uses_iam(self):
+        self._use_bedrock_provider()
+        config.app["bedrock_api_key"] = "not-a-valid-bedrock-key"
+        config.app["bedrock_aws_access_key_id"] = "AKIA_TEST"
+        config.app["bedrock_aws_secret_access_key"] = "secret"
+
+        captured = {}
+
+        def _completion(**kwargs):
+            captured.update(kwargs)
+            message = types.SimpleNamespace(content="ok")
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+        fake_litellm = types.SimpleNamespace(completion=_completion)
+
+        with patch.dict(sys.modules, {"litellm": fake_litellm}):
+            result = llm._generate_response("test")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(captured["aws_access_key_id"], "AKIA_TEST")
+        self.assertNotIn("api_key", captured)
+
+    def test_bedrock_rejects_iam_username_as_bearer(self):
+        self._use_bedrock_provider()
+        config.app["bedrock_api_key"] = "BedrockAPIKey-0g21"
+
+        result = llm._generate_response("test")
+
+        self.assertIn("Error:", result)
+        self.assertIn("IAM username", result)
+
+    def test_is_valid_bedrock_bearer_token(self):
+        self.assertTrue(llm.is_valid_bedrock_bearer_token("ABSKabc123"))
+        self.assertTrue(llm.is_valid_bedrock_bearer_token("bedrock-api-key-xyz"))
+        self.assertFalse(llm.is_valid_bedrock_bearer_token("AKIA123"))
+        self.assertFalse(llm.is_valid_bedrock_bearer_token("BedrockAPIKey-0g21"))
+        self.assertFalse(llm.is_valid_bedrock_bearer_token(""))
+
+    def test_normalize_bedrock_model_name_upgrades_deprecated(self):
+        self.assertEqual(
+            llm.normalize_bedrock_model_name(
+                "anthropic.claude-3-5-sonnet-20241022-v2:0"
+            ),
+            llm.DEFAULT_BEDROCK_MODEL,
+        )
+        self.assertEqual(
+            llm.normalize_bedrock_model_name(
+                "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            ),
+            "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        )
+
+    def test_bedrock_mantle_alias_maps_gpt_5_5_mini_to_gpt_5_4(self):
+        self.assertEqual(
+            llm.normalize_bedrock_mantle_model_name("openai.gpt-5.5-mini"),
+            "openai.gpt-5.4",
+        )
+        self.assertTrue(llm.is_bedrock_mantle_responses_model("gpt-5.5-mini"))
+
+    def test_bedrock_mantle_responses_returns_normalized_text(self):
+        self._use_bedrock_provider(
+            model_name="openai.gpt-5.4",
+            region="us-east-2",
+        )
+        config.app["bedrock_api_key"] = "ABSK_test_bearer_token"
+
+        fake_response = types.SimpleNamespace(
+            output_text="hello\nworld",
+            output=[],
+        )
+        captured = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return fake_response
+
+        fake_client = types.SimpleNamespace(
+            responses=types.SimpleNamespace(create=_create)
+        )
+
+        with patch("app.services.llm.OpenAI", return_value=fake_client):
+            result = llm._generate_response("Say hello")
+
+        self.assertEqual(captured["model"], "openai.gpt-5.4")
+        self.assertEqual(captured["input"], "Say hello")
+        self.assertEqual(result, "helloworld")
+
+    def test_bedrock_mantle_requires_bearer_token(self):
+        self._use_bedrock_provider(
+            model_name="openai.gpt-5.4",
+            region="us-east-2",
+        )
+
+        result = llm._generate_response("test")
+
+        self.assertIn("Error:", result)
+        self.assertIn("Bedrock API key", result)
+
+    def test_bedrock_model_options_includes_common_providers(self):
+        self.assertIn(
+            "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            llm.BEDROCK_MODEL_OPTIONS,
+        )
+        self.assertIn("amazon.nova-lite-v1:0", llm.BEDROCK_MODEL_OPTIONS)
+        self.assertIn("us.meta.llama3-3-70b-instruct-v1:0", llm.BEDROCK_MODEL_OPTIONS)
+        self.assertGreaterEqual(len(llm.BEDROCK_MODEL_OPTIONS), 15)
 
 
 class TestRuntimeEnvironmentDetection(unittest.TestCase):

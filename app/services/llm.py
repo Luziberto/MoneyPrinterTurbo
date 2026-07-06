@@ -1,14 +1,16 @@
 import json
 import logging
+import os
 import re
 import requests
-from typing import List
+from typing import List, Union
 
 from loguru import logger
 from openai import AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
 
 from app.config import config
+from app.models.schema import NormalizedCollectorKeywords, normalize_collector_keywords
 
 _max_retries = 5
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
@@ -185,10 +187,273 @@ def _extract_qwen_generation_text(response) -> str:
     return _normalize_text_response(text, "qwen")
 
 
+def _bedrock_litellm_model_id(model_name: str) -> str:
+    model_name = (model_name or "").strip()
+    if not model_name:
+        return model_name
+    if model_name.startswith("bedrock/"):
+        return model_name
+    return f"bedrock/{model_name}"
+
+
+_BEDROCK_BEARER_PREFIXES = ("ABSK", "bedrock-api-key-")
+DEFAULT_BEDROCK_MODEL = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+DEFAULT_BEDROCK_MANTLE_OPENAI_MODEL = "openai.gpt-5.4"
+_DEPRECATED_BEDROCK_MODELS = {
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": DEFAULT_BEDROCK_MODEL,
+    "anthropic.claude-3-5-sonnet-20240620-v1:0": DEFAULT_BEDROCK_MODEL,
+}
+_BEDROCK_MANTLE_RESPONSES_MODELS = frozenset(
+    {
+        "openai.gpt-5.5",
+        "openai.gpt-5.4",
+    }
+)
+_BEDROCK_MANTLE_MODEL_ALIASES = {
+    "gpt-5.5-mini": DEFAULT_BEDROCK_MANTLE_OPENAI_MODEL,
+    "openai.gpt-5.5-mini": DEFAULT_BEDROCK_MANTLE_OPENAI_MODEL,
+    "gpt-5.5 mini": DEFAULT_BEDROCK_MANTLE_OPENAI_MODEL,
+}
+_BEDROCK_MANTLE_MODEL_REGIONS = {
+    "openai.gpt-5.5": ("us-east-2",),
+    "openai.gpt-5.4": ("us-east-2", "us-west-2"),
+}
+
+# Curated Bedrock model IDs for the WebUI selectbox (not fetched live — Bedrock API keys
+# do not support ListFoundationModels; enable models in the console first).
+BEDROCK_MODEL_OPTIONS = [
+    # Anthropic Claude 4.5 — region us-east-1
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Amazon Nova — region us-east-1
+    "amazon.nova-micro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "amazon.nova-pro-v1:0",
+    "amazon.nova-premier-v1:0",
+    # Meta Llama — use us. inference profiles in us-east-1
+    "us.meta.llama3-3-70b-instruct-v1:0",
+    "us.meta.llama3-2-90b-instruct-v1:0",
+    "us.meta.llama3-2-11b-instruct-v1:0",
+    "us.meta.llama3-2-3b-instruct-v1:0",
+    "us.meta.llama3-2-1b-instruct-v1:0",
+    # Mistral
+    "mistral.mistral-small-2402-v1:0",
+    "mistral.mistral-large-2402-v1:0",
+    # Cohere
+    "cohere.command-r-v1:0",
+    "cohere.command-r-plus-v1:0",
+    # OpenAI on Bedrock Mantle — region us-east-2 (separate model access)
+    "openai.gpt-5.4",
+    "openai.gpt-5.5",
+]
+
+DEFAULT_BEDROCK_SELECT_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
+ANTHROPIC_MODEL_OPTIONS = [
+    "claude-sonnet-4-5-20250929",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+]
+
+
+def _anthropic_litellm_model_id(model_name: str) -> str:
+    model_name = (model_name or "").strip()
+    if not model_name:
+        return f"anthropic/{DEFAULT_ANTHROPIC_MODEL}"
+    if model_name.startswith("anthropic/"):
+        return model_name
+    return f"anthropic/{model_name}"
+
+
+def normalize_bedrock_mantle_model_name(model_name: str) -> str:
+    model_name = (model_name or "").strip()
+    if not model_name:
+        return DEFAULT_BEDROCK_MANTLE_OPENAI_MODEL
+    alias = _BEDROCK_MANTLE_MODEL_ALIASES.get(model_name) or _BEDROCK_MANTLE_MODEL_ALIASES.get(
+        model_name.lower()
+    )
+    if alias:
+        logger.warning(
+            f"bedrock mantle: '{model_name}' is not available on Bedrock, "
+            f"using '{alias}' instead"
+        )
+        return alias
+    return model_name
+
+
+def is_bedrock_mantle_responses_model(model_name: str) -> bool:
+    normalized = normalize_bedrock_mantle_model_name(model_name)
+    return normalized in _BEDROCK_MANTLE_RESPONSES_MODELS
+
+
+def normalize_bedrock_model_name(model_name: str) -> str:
+    model_name = (model_name or "").strip()
+    if not model_name:
+        return DEFAULT_BEDROCK_MODEL
+    if is_bedrock_mantle_responses_model(model_name):
+        return normalize_bedrock_mantle_model_name(model_name)
+    if model_name in _DEPRECATED_BEDROCK_MODELS:
+        replacement = _DEPRECATED_BEDROCK_MODELS[model_name]
+        logger.warning(
+            f"bedrock model '{model_name}' is deprecated, fallback to '{replacement}'"
+        )
+        return replacement
+    return model_name
+
+
+def is_valid_bedrock_bearer_token(token: str) -> bool:
+    value = str(token or "").strip()
+    if not value:
+        return False
+    return value.startswith(_BEDROCK_BEARER_PREFIXES)
+
+
+def looks_like_aws_access_key_id(token: str) -> bool:
+    value = str(token or "").strip()
+    return value.startswith(("AKIA", "ASIA"))
+
+
+def looks_like_bedrock_iam_username(token: str) -> bool:
+    """Bedrock console creates IAM users named BedrockAPIKey-xxxx — not the bearer token."""
+    value = str(token or "").strip()
+    return value.startswith("BedrockAPIKey-")
+
+
+def _resolve_bedrock_bearer_token() -> str | None:
+    raw = config.app.get("bedrock_api_key") or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+    token = str(raw or "").strip()
+    if not token:
+        return None
+    if is_valid_bedrock_bearer_token(token):
+        return token
+    if looks_like_bedrock_iam_username(token):
+        raise ValueError(
+            "bedrock: this looks like the IAM username (BedrockAPIKey-...), not the API key. "
+            "In the Bedrock console → API keys → Generate, copy the full token that starts "
+            "with ABSK... (long-term) or bedrock-api-key-... (short-term)."
+        )
+    if looks_like_aws_access_key_id(token):
+        raise ValueError(
+            "bedrock: bedrock_api_key looks like an AWS Access Key (AKIA/ASIA). "
+            "Put Access Key + Secret Key in the IAM credentials section, or generate "
+            "a Bedrock API key in the console (prefix ABSK... or bedrock-api-key-...)."
+        )
+    logger.warning(
+        "bedrock_api_key has an invalid Bedrock bearer format; "
+        "ignoring it and falling back to IAM credentials"
+    )
+    return None
+
+
+def _bedrock_litellm_kwargs() -> dict:
+    region = (
+        config.app.get("bedrock_region")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
+    kwargs = {"aws_region_name": str(region).strip(), "drop_params": True}
+
+    bearer_token = _resolve_bedrock_bearer_token()
+    if bearer_token:
+        kwargs["api_key"] = bearer_token
+        return kwargs
+
+    access_key = config.app.get("bedrock_aws_access_key_id") or os.environ.get(
+        "AWS_ACCESS_KEY_ID"
+    )
+    secret_key = config.app.get("bedrock_aws_secret_access_key") or os.environ.get(
+        "AWS_SECRET_ACCESS_KEY"
+    )
+    session_token = config.app.get("bedrock_aws_session_token") or os.environ.get(
+        "AWS_SESSION_TOKEN"
+    )
+
+    if access_key:
+        kwargs["aws_access_key_id"] = access_key
+    if secret_key:
+        kwargs["aws_secret_access_key"] = secret_key
+    if session_token:
+        kwargs["aws_session_token"] = session_token
+
+    return kwargs
+
+
+def _bedrock_mantle_api_base(region: str) -> str:
+    return f"https://bedrock-mantle.{region.strip()}.api.aws/openai/v1"
+
+
+def _resolve_bedrock_mantle_region(model_name: str, configured_region: str) -> str:
+    allowed = _BEDROCK_MANTLE_MODEL_REGIONS.get(
+        model_name, ("us-east-2",)
+    )
+    region = (configured_region or allowed[0]).strip()
+    if region in allowed:
+        return region
+    fallback = allowed[0]
+    logger.warning(
+        f"bedrock mantle: region '{region}' is not supported for {model_name}, "
+        f"using '{fallback}'"
+    )
+    return fallback
+
+
+def _extract_bedrock_mantle_response_text(response, provider: str) -> str:
+    if not response:
+        raise ValueError(f"[{provider}] returned empty response")
+
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return _normalize_text_response(output_text, provider)
+
+    parts: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        for block in getattr(item, "content", None) or []:
+            text = getattr(block, "text", None)
+            if text:
+                parts.append(text)
+
+    if not parts:
+        raise ValueError(f"[{provider}] returned empty response")
+    return _normalize_text_response("".join(parts), provider)
+
+
+def _bedrock_mantle_responses(prompt: str, model_name: str) -> str:
+    mantle_model = normalize_bedrock_mantle_model_name(model_name)
+    bearer_token = _resolve_bedrock_bearer_token()
+    if not bearer_token:
+        raise ValueError(
+            "bedrock mantle: OpenAI models (openai.gpt-5.4 / openai.gpt-5.5) require "
+            "a Bedrock API key (ABSK... or bedrock-api-key-...) from the Bedrock console."
+        )
+
+    configured_region = (
+        config.app.get("bedrock_region")
+        or os.environ.get("BEDROCK_MANTLE_REGION")
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-2"
+    )
+    region = _resolve_bedrock_mantle_region(mantle_model, str(configured_region))
+    api_base = _bedrock_mantle_api_base(region)
+    logger.info(
+        f"requesting bedrock mantle responses, model: {mantle_model}, region: {region}"
+    )
+
+    client = OpenAI(api_key=bearer_token, base_url=api_base)
+    response = client.responses.create(model=mantle_model, input=prompt)
+    return _extract_bedrock_mantle_response_text(response, "bedrock")
+
+
 def _generate_response(prompt: str) -> str:
     try:
         content = ""
-        llm_provider = config.app.get("llm_provider", "openai")
+        llm_provider = str(config.app.get("llm_provider", "openai")).strip().lower()
         logger.info(f"llm provider: {llm_provider}")
         if llm_provider == "g4f":
             if not config.app.get("enable_g4f", False):
@@ -222,6 +487,11 @@ def _generate_response(prompt: str) -> str:
             )
         else:
             api_version = ""  # for azure
+            api_key = ""
+            model_name = ""
+            base_url = ""
+            secret_key = ""
+            account_id = ""
             if llm_provider == "moonshot":
                 api_key = config.app.get("moonshot_api_key")
                 model_name = config.app.get("moonshot_model_name")
@@ -376,10 +646,25 @@ def _generate_response(prompt: str) -> str:
                 except Exception as e:
                     raise Exception(f"[{llm_provider}] error: {str(e)}")
 
+            elif llm_provider == "anthropic":
+                api_key = config.app.get("anthropic_api_key") or os.environ.get(
+                    "ANTHROPIC_API_KEY"
+                )
+                model_name = config.app.get("anthropic_model_name")
+                if not model_name:
+                    model_name = DEFAULT_ANTHROPIC_MODEL
             elif llm_provider == "litellm":
                 model_name = config.app.get("litellm_model_name")
+            elif llm_provider == "bedrock":
+                model_name = config.app.get("bedrock_model_name")
 
-            if llm_provider not in ["pollinations", "ollama", "litellm"]:  # Skip validation for providers that don't require API key
+            if llm_provider not in [
+                "pollinations",
+                "ollama",
+                "litellm",
+                "bedrock",
+                "anthropic",
+            ]:  # Skip validation for providers that don't require API key
                 if not api_key:
                     raise ValueError(
                         f"{llm_provider}: api_key is not set, please set it in the config.toml file."
@@ -519,6 +804,35 @@ def _generate_response(prompt: str) -> str:
                 ).json()
                 return _normalize_text_response(response.get("result"), llm_provider)
 
+            if llm_provider == "anthropic":
+                import litellm
+
+                if not api_key:
+                    raise ValueError(
+                        f"{llm_provider}: api_key is not set, please set it in the config.toml file."
+                    )
+                if not model_name:
+                    raise ValueError(
+                        f"{llm_provider}: model_name is not set, please set it in the config.toml file."
+                    )
+
+                anthropic_model = _anthropic_litellm_model_id(model_name)
+                logger.info(f"requesting anthropic chat completion, model: {anthropic_model}")
+
+                response = litellm.completion(
+                    model=anthropic_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    api_key=api_key,
+                    drop_params=True,
+                )
+
+                if not response:
+                    raise ValueError(f"[{llm_provider}] returned empty response")
+                if not getattr(response, "choices", None):
+                    raise ValueError(f"[{llm_provider}] returned empty response")
+
+                return _extract_chat_completion_text(response, llm_provider)
+
             if llm_provider == "litellm":
                 import litellm
 
@@ -539,6 +853,44 @@ def _generate_response(prompt: str) -> str:
                     raise ValueError(f"[{llm_provider}] returned empty response")
 
                 return _extract_chat_completion_text(response, llm_provider)
+
+            if llm_provider == "bedrock":
+                if not model_name:
+                    raise ValueError(
+                        f"{llm_provider}: model_name is not set, please set it in the config.toml file."
+                    )
+
+                if is_bedrock_mantle_responses_model(model_name):
+                    return _bedrock_mantle_responses(prompt, model_name)
+
+                import litellm
+
+                bedrock_model = _bedrock_litellm_model_id(
+                    normalize_bedrock_model_name(model_name)
+                )
+                bedrock_kwargs = _bedrock_litellm_kwargs()
+                logger.info(
+                    f"requesting bedrock chat completion, model: {bedrock_model}, "
+                    f"region: {bedrock_kwargs.get('aws_region_name')}"
+                )
+
+                response = litellm.completion(
+                    model=bedrock_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    **bedrock_kwargs,
+                )
+
+                if not response:
+                    raise ValueError(f"[{llm_provider}] returned empty response")
+                if not getattr(response, "choices", None):
+                    raise ValueError(f"[{llm_provider}] returned empty response")
+
+                return _extract_chat_completion_text(response, llm_provider)
+
+            if llm_provider in {"litellm", "bedrock", "anthropic"}:
+                raise ValueError(
+                    f"{llm_provider}: request did not complete; check model name and credentials."
+                )
 
             if llm_provider == "azure":
                 # Azure OpenAI SDK 使用 `azure_endpoint` 和 `api_version` 生成专用请求地址，
@@ -803,43 +1155,91 @@ Brief:
     return polished
 
 
+def _parse_generated_terms_response(
+    response: str,
+) -> NormalizedCollectorKeywords | None:
+    if not response:
+        return None
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*]", response, re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group())
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(parsed, list) or not parsed:
+        return None
+
+    if all(isinstance(item, str) for item in parsed):
+        return normalize_collector_keywords(parsed)
+
+    if all(isinstance(item, dict) for item in parsed):
+        if not all(str(item.get("term", "")).strip() for item in parsed):
+            return None
+        return normalize_collector_keywords(parsed)
+
+    return None
+
+
+_WEIGHTED_TERMS_OUTPUT_RULES = """
+Return only a JSON array of objects with this shape:
+[
+  { "term": "main visual topic", "weight": 1.0 },
+  { "term": "supporting scene", "weight": 0.7 }
+]
+
+Weight rules:
+- Use English search terms only.
+- Each term should contain 1-5 words and be searchable on stock footage sites.
+- weight must be between 0.0 and 1.0.
+- 1.0 = primary editorial keyword.
+- 0.7-0.9 = strong supporting visuals.
+- 0.4-0.6 = optional B-roll / context.
+- Weights are relative; they do not need to sum to 1.0.
+""".strip()
+
+
 def generate_terms(
     video_subject: str,
     video_script: str,
     amount: int = 5,
     match_script_order: bool = False,
-) -> List[str]:
+) -> Union[NormalizedCollectorKeywords, str]:
     if match_script_order:
         goal = (
             f"Generate {amount} chronological stock-video search terms that follow "
             "the order of topics in the video script."
         )
         ordering_rule = (
-            "11. keep the terms in the same order as the script narration; "
+            "Keep the terms in the same order as the script narration; "
             "earlier terms must describe earlier visual moments."
         )
-        example_terms = [
-            "opening visual topic",
-            *[
-                f"script visual topic {index}"
-                for index in range(2, max(amount, 1))
-            ],
-            "final visual topic",
-        ]
-        output_example = json.dumps(example_terms[:amount], ensure_ascii=False)
+        output_example = json.dumps(
+            [
+                {"term": "opening visual topic", "weight": 1.0},
+                {"term": "middle script visual topic", "weight": 0.85},
+                {"term": "final visual topic", "weight": 0.7},
+            ][:amount],
+            ensure_ascii=False,
+        )
         prompt = f"""
 # Role: Video Search Terms Generator
 
 ## Goals:
 {goal}
 
-## Constrains:
-1. the search terms are to be returned as a json-array of strings.
-2. each search term should consist of 1-3 words, always add the main subject of the video.
-3. you must only return the json-array of strings. you must not return anything else. you must not return the script.
-4. the search terms must be related to the subject of the video.
-5. reply with english search terms only.
-{ordering_rule}
+## Constraints:
+1. Return only a JSON array of objects with `term` and `weight`.
+2. Each search term should consist of 1-5 words and include the main subject when relevant.
+3. Do not return anything else besides the JSON array.
+4. The search terms must be related to the subject of the video.
+5. {ordering_rule}
+
+{_WEIGHTED_TERMS_OUTPUT_RULES}
 
 ## Output Example:
 {output_example}
@@ -850,8 +1250,6 @@ def generate_terms(
 
 ### Video Script
 {video_script}
-
-Please note that you must use English for generating video search terms; Chinese is not accepted.
 """.strip()
     else:
         prompt = f"""
@@ -868,15 +1266,11 @@ The goal is not simply to describe the topic, but to help find diverse and relev
 # Rules
 
 1. Generate exactly {amount} search terms.
-2. Return only a JSON array of strings.
-3. Use English only.
-4. Each search term should contain 1-5 words.
-5. Search terms must be highly searchable on stock footage websites.
-6. Use both the video subject and the video script.
-7. If the subject contains a specific food, place, landmark, object, animal, product or named entity, the first search term must be the exact entity name.
-8. Do not focus exclusively on the main subject.
-9. Include supporting visual scenes that naturally appear in the script.
-10. Prioritize footage that is likely to exist in stock libraries.
+2. Use both the video subject and the video script.
+3. If the subject contains a specific food, place, landmark, object, animal, product or named entity, the highest-weight term must be the exact entity name.
+4. Do not focus exclusively on the main subject.
+5. Include supporting visual scenes that naturally appear in the script.
+6. Prioritize footage that is likely to exist in stock libraries.
 
 # Coverage Requirements
 
@@ -942,6 +1336,8 @@ Avoid symbolic representations unless explicitly mentioned in the script.
 - Temple spirituality
 - Nature sounds
 
+{_WEIGHTED_TERMS_OUTPUT_RULES}
+
 # Context
 
 ## Video Subject
@@ -953,21 +1349,19 @@ Avoid symbolic representations unless explicitly mentioned in the script.
 # Output Example
 
 [
-  "Tokyo street",
-  "Japan train station",
-  "Japanese neighborhood",
-  "People using vending machines",
-  "Japanese countryside"
+  {{ "term": "Tokyo street", "weight": 1.0 }},
+  {{ "term": "Japan train station", "weight": 0.85 }},
+  {{ "term": "Japanese neighborhood", "weight": 0.75 }},
+  {{ "term": "People using vending machines", "weight": 0.65 }},
+  {{ "term": "Japanese countryside", "weight": 0.5 }}
 ]
-
-Please note that you must use English for generating video search terms; Chinese is not accepted.
 """.strip()
 
     logger.info(
         f"subject: {video_subject}, match_script_order: {match_script_order}"
     )
 
-    search_terms = []
+    search_terms: NormalizedCollectorKeywords | None = None
     response = ""
     for i in range(_max_retries):
         try:
@@ -975,32 +1369,27 @@ Please note that you must use English for generating video search terms; Chinese
             if "Error: " in response:
                 logger.error(f"failed to generate video script: {response}")
                 return response
-            search_terms = json.loads(response)
-            if not isinstance(search_terms, list) or not all(
-                isinstance(term, str) for term in search_terms
-            ):
-                logger.error("response is not a list of strings.")
+            search_terms = _parse_generated_terms_response(response)
+            if search_terms is None:
+                logger.error("response is not a valid weighted keyword list.")
                 continue
 
         except Exception as e:
             logger.warning(f"failed to generate video terms: {str(e)}")
             if response:
-                match = re.search(r"\[.*]", response)
-                if match:
-                    try:
-                        search_terms = json.loads(match.group())
-                    except Exception as e:
-                        # 这里保留重试流程，但必须记录 LLM 返回的非标准 JSON，
-                        # 否则后续排查搜索词为空时无法定位
-                        # 是模型格式问题还是解析逻辑问题。
-                        logger.warning(f"failed to generate video terms: {str(e)}")
+                search_terms = _parse_generated_terms_response(response)
 
-        if search_terms and len(search_terms) > 0:
+        if search_terms and search_terms.keywords:
             break
         if i < _max_retries:
             logger.warning(f"failed to generate video terms, trying again... {i + 1}")
 
-    logger.success(f"completed: \n{search_terms}")
+    if not search_terms or not search_terms.keywords:
+        return "Error: failed to generate video terms."
+
+    logger.success(
+        f"completed: \n{[keyword.model_dump() for keyword in search_terms.keywords]}"
+    )
     return search_terms
 
 
