@@ -1,11 +1,10 @@
+import re
 import warnings
 from enum import Enum
 from typing import Any, List, Literal, Optional, Union
 
 import pydantic
 from pydantic import BaseModel, Field
-
-from app.config import config
 
 # 忽略 Pydantic 的特定警告
 warnings.filterwarnings(
@@ -60,6 +59,108 @@ class MaterialInfo:
     score: int = 0
 
 
+class CollectorKeyword(BaseModel):
+    term: str
+    weight: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class CollectorChannelConfig(BaseModel):
+    target_clips: int = Field(default=25, ge=1)
+    min_acceptable_clips: int = Field(default=20, ge=1)
+
+
+class NormalizedCollectorKeywords(BaseModel):
+    keywords: List[CollectorKeyword] = Field(default_factory=list)
+    has_explicit_weights: bool = False
+
+
+DEFAULT_COLLECTOR_TARGET_CLIPS = 25
+DEFAULT_COLLECTOR_MIN_ACCEPTABLE_CLIPS = 20
+
+
+def resolve_collector_clip_limits(
+    target_clips: int | None = None,
+    min_acceptable_clips: int | None = None,
+) -> CollectorChannelConfig:
+    target = max(1, int(target_clips or DEFAULT_COLLECTOR_TARGET_CLIPS))
+    default_min = min(DEFAULT_COLLECTOR_MIN_ACCEPTABLE_CLIPS, target)
+    try:
+        minimum = int(min_acceptable_clips if min_acceptable_clips is not None else default_min)
+    except (TypeError, ValueError):
+        minimum = default_min
+    minimum = max(1, min(minimum, target))
+    return CollectorChannelConfig(target_clips=target, min_acceptable_clips=minimum)
+
+
+def normalize_collector_keywords(
+    raw_terms: str | list | None,
+) -> NormalizedCollectorKeywords:
+    if raw_terms is None:
+        return NormalizedCollectorKeywords()
+
+    items: list[Any]
+    if isinstance(raw_terms, str):
+        items = [part.strip() for part in re.split(r"[,，]", raw_terms) if part.strip()]
+        has_explicit_weights = False
+    elif isinstance(raw_terms, list):
+        items = raw_terms
+        has_explicit_weights = any(
+            isinstance(item, CollectorKeyword)
+            or (isinstance(item, dict) and "weight" in item)
+            for item in items
+        )
+    else:
+        raise ValueError("video_terms must be a string or a list of keywords.")
+
+    keywords: list[CollectorKeyword] = []
+    for item in items:
+        if isinstance(item, CollectorKeyword):
+            term = item.term.strip()
+            if term:
+                keywords.append(item.model_copy(update={"term": term}))
+            continue
+        if isinstance(item, dict):
+            term = str(item.get("term", "")).strip()
+            if not term:
+                continue
+            try:
+                weight = float(item.get("weight", 1.0))
+            except (TypeError, ValueError):
+                weight = 1.0
+            keywords.append(
+                CollectorKeyword(term=term, weight=max(0.0, min(1.0, weight)))
+            )
+            continue
+        term = str(item).strip()
+        if term:
+            keywords.append(CollectorKeyword(term=term, weight=1.0))
+
+    return NormalizedCollectorKeywords(
+        keywords=keywords,
+        has_explicit_weights=has_explicit_weights,
+    )
+
+
+def collector_keywords_to_strings(keywords: str | list | None) -> list[str]:
+    return [
+        keyword.term
+        for keyword in normalize_collector_keywords(keywords).keywords
+        if keyword.term
+    ]
+
+
+def format_collector_keywords_for_ui(keywords: str | list | None) -> str:
+    normalized = normalize_collector_keywords(keywords)
+    if not normalized.keywords:
+        return ""
+    if normalized.has_explicit_weights:
+        return ", ".join(
+            f"{keyword.term} ({keyword.weight:g})"
+            for keyword in normalized.keywords
+        )
+    return ", ".join(keyword.term for keyword in normalized.keywords)
+
+
 class CollectorJobError(BaseModel):
     code: str = ""
     message: str = ""
@@ -83,7 +184,7 @@ class CollectorSelectedClip(BaseModel):
 
 class CollectorJobRequest(BaseModel):
     client_task_id: str
-    keywords: List[str]
+    keywords: List[CollectorKeyword]
     target_clips: int = Field(default=25, ge=1)
     min_acceptable_clips: int = Field(default=20, ge=1)
 
@@ -167,6 +268,11 @@ class VideoParams(BaseModel):
     title_background_overlay: bool = True
     title_overlay_color: Optional[str] = "rgba(0,0,0,0.5)"
     scene_structure: Optional[List[str]] = None
+
+    collector_target_clips: Optional[int] = None
+    collector_min_acceptable_clips: Optional[int] = None
+    channel_slug: Optional[str] = None
+    publish_platforms: Optional[List[str]] = None
 
 
 class SubtitleRequest(BaseModel):
