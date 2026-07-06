@@ -1,14 +1,20 @@
 import math
 import os.path
-import re
 from os import path
 
 from loguru import logger
 
 from app.config import config
 from app.models import const
-from app.models.schema import CollectorSelectedClip, VideoConcatMode, VideoParams
-from app.services import collector_client, llm, material, subtitle, twelvelabs, video, voice, upload_post
+from app.models.schema import (
+    CollectorKeyword,
+    CollectorSelectedClip,
+    VideoConcatMode,
+    VideoParams,
+    collector_keywords_to_strings,
+    normalize_collector_keywords,
+)
+from app.services import collector_client, llm, material, publish, subtitle, twelvelabs, video, voice
 from app.services import state as sm
 from app.services.runtime_limits import cap_thread_count
 from app.utils import utils
@@ -65,27 +71,44 @@ def generate_script(task_id, params):
 def generate_terms(task_id, params, video_script):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
+    has_explicit_weights = False
     if not video_terms:
-        video_terms = llm.generate_terms(
+        generated = llm.generate_terms(
             video_subject=params.video_subject,
             video_script=video_script,
             amount=8 if params.match_materials_to_script else 5,
             match_script_order=params.match_materials_to_script,
         )
+        if isinstance(generated, str):
+            return generated
+        video_terms = [keyword.model_dump() for keyword in generated.keywords]
+        has_explicit_weights = generated.has_explicit_weights
     else:
-        if isinstance(video_terms, str):
-            video_terms = [term.strip() for term in re.split(r"[,，]", video_terms)]
-        elif isinstance(video_terms, list):
-            video_terms = [term.strip() for term in video_terms]
-        else:
-            raise ValueError("video_terms must be a string or a list of strings.")
-
+        normalized = normalize_collector_keywords(video_terms)
+        video_terms = [keyword.model_dump() for keyword in normalized.keywords]
+        has_explicit_weights = normalized.has_explicit_weights
         logger.debug(f"video terms: {utils.to_json(video_terms)}")
 
-    if not params.match_materials_to_script:
-        video_terms = twelvelabs.rerank_terms_by_subject(
-            params.video_subject, video_terms
+    if (
+        not params.match_materials_to_script
+        and not has_explicit_weights
+        and video_terms
+    ):
+        reranked_terms = twelvelabs.rerank_terms_by_subject(
+            params.video_subject, collector_keywords_to_strings(video_terms)
         )
+        weights_by_term = {
+            keyword["term"]: keyword["weight"]
+            for keyword in video_terms
+            if isinstance(keyword, dict) and keyword.get("term")
+        }
+        video_terms = [
+            CollectorKeyword(
+                term=term,
+                weight=weights_by_term.get(term, 1.0),
+            ).model_dump()
+            for term in reranked_terms
+        ]
 
     if not video_terms:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -239,6 +262,8 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
                 audio_duration=audio_duration * params.video_count,
                 max_clip_duration=params.video_clip_duration,
                 match_script_order=params.match_materials_to_script,
+                collector_target_clips=params.collector_target_clips,
+                collector_min_acceptable_clips=params.collector_min_acceptable_clips,
             )
         except collector_client.CollectorError as exc:
             sm.state.update_task(
@@ -420,20 +445,15 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         f"task {task_id} finished, generated {len(final_video_paths)} videos."
     )
 
-    # 7. Cross-post to TikTok/Instagram (if enabled)
-    cross_post_results = []
-    if upload_post.upload_post_service.is_configured() and upload_post.upload_post_service.auto_upload:
-        logger.info("\n\n## cross-posting videos to TikTok/Instagram")
-        for video_path in final_video_paths:
-            result = upload_post.cross_post_video(
-                video_path=video_path,
-                title=params.video_subject or "Check out this video! #shorts #viral"
-            )
-            cross_post_results.append(result)
-            if result.get('success'):
-                logger.info(f"✅ Cross-posted: {video_path}")
-            else:
-                logger.warning(f"⚠️ Failed to cross-post: {video_path} - {result.get('error', 'Unknown error')}")
+    # 7. Cross-post to social platforms (if auto_upload enabled)
+    publish_platforms = getattr(params, "publish_platforms", None)
+    cross_post_results = publish.cross_post_if_auto_upload(
+        video_paths=final_video_paths,
+        subject=params.video_subject or "",
+        script=video_script or "",
+        language=params.video_language or "",
+        publish_platforms=publish_platforms,
+    )
 
     kwargs = {
         "videos": final_video_paths,

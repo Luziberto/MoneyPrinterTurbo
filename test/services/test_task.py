@@ -10,7 +10,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.services import task as tm
-from app.models.schema import CollectorSelectedClip, MaterialInfo, VideoParams
+from app.models.schema import (
+    CollectorKeyword,
+    CollectorSelectedClip,
+    MaterialInfo,
+    NormalizedCollectorKeywords,
+    VideoParams,
+)
 from app.utils import utils
 
 resources_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources")
@@ -64,16 +70,75 @@ class TestTaskService(unittest.TestCase):
             match_materials_to_script=True,
         )
 
-        with patch.object(tm.llm, "generate_terms", return_value=["city", "train"]) as generate:
+        weighted = NormalizedCollectorKeywords(
+            keywords=[
+                CollectorKeyword(term="city", weight=1.0),
+                CollectorKeyword(term="train", weight=0.8),
+            ],
+            has_explicit_weights=True,
+        )
+
+        with patch.object(tm.llm, "generate_terms", return_value=weighted) as generate:
             result = tm.generate_terms("task-id", params, "先城市，再地铁")
 
-        self.assertEqual(result, ["city", "train"])
+        self.assertEqual(
+            result,
+            [
+                {"term": "city", "weight": 1.0},
+                {"term": "train", "weight": 0.8},
+            ],
+        )
         generate.assert_called_once_with(
             video_subject="城市通勤",
             video_script="先城市，再地铁",
             amount=8,
             match_script_order=True,
         )
+
+    def test_generate_terms_reranks_legacy_keywords_without_explicit_weights(self):
+        params = VideoParams(
+            video_subject="Tokyo nightlife",
+            video_script="",
+            match_materials_to_script=False,
+            video_terms="tokyo street, japan train",
+        )
+
+        with patch.object(
+            tm.twelvelabs,
+            "rerank_terms_by_subject",
+            return_value=["japan train", "tokyo street"],
+        ) as rerank:
+            result = tm.generate_terms("task-id", params, "script")
+
+        rerank.assert_called_once_with(
+            "Tokyo nightlife", ["tokyo street", "japan train"]
+        )
+        self.assertEqual(
+            result,
+            [
+                {"term": "japan train", "weight": 1.0},
+                {"term": "tokyo street", "weight": 1.0},
+            ],
+        )
+
+    def test_generate_terms_skips_rerank_when_weights_are_explicit(self):
+        params = VideoParams(
+            video_subject="Tokyo nightlife",
+            video_script="",
+            match_materials_to_script=False,
+        )
+        weighted = NormalizedCollectorKeywords(
+            keywords=[CollectorKeyword(term="tokyo street", weight=1.0)],
+            has_explicit_weights=True,
+        )
+
+        with patch.object(tm.llm, "generate_terms", return_value=weighted), patch.object(
+            tm.twelvelabs, "rerank_terms_by_subject"
+        ) as rerank:
+            result = tm.generate_terms("task-id", params, "script")
+
+        rerank.assert_not_called()
+        self.assertEqual(result, [{"term": "tokyo street", "weight": 1.0}])
 
     def test_get_video_materials_records_structured_collector_error(self):
         params = VideoParams(
