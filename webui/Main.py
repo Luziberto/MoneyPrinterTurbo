@@ -18,10 +18,12 @@ if root_dir not in sys.path:
 from app.config import config
 from app.models.schema import (
     MaterialInfo,
+    NormalizedCollectorKeywords,
     VideoAspect,
     VideoConcatMode,
     VideoParams,
     VideoTransitionMode,
+    format_collector_keywords_for_ui,
 )
 from app.services import bgm as bgm_service
 from app.services import llm, voice
@@ -32,7 +34,27 @@ from app.services.runtime_limits import (
     single_flight_generation_lock,
 )
 from app.utils import utils
-from webui import cockpit
+from webui import cockpit as _cockpit_module
+from webui.cockpit_inspector import InspectorCallbacks
+
+import importlib
+
+# Streamlit keeps module objects across reruns; reload so UI changes apply without
+# restarting the server (and recover from a partially stale cockpit import).
+cockpit = importlib.reload(_cockpit_module)
+
+
+def _format_generated_terms(terms: NormalizedCollectorKeywords | str) -> str:
+    if isinstance(terms, NormalizedCollectorKeywords):
+        return format_collector_keywords_for_ui(
+            [keyword.model_dump() for keyword in terms.keywords]
+        )
+    return str(terms)
+
+
+def _is_terms_error(terms: NormalizedCollectorKeywords | str) -> bool:
+    return isinstance(terms, str) and "Error: " in terms
+
 
 st.set_page_config(
     page_title="MoneyPrinterTurbo",
@@ -162,10 +184,16 @@ if "cockpit_skip_preview" not in st.session_state:
 locales = utils.load_locales(i18n_dir)
 
 # 创建一个顶部栏，包含标题和语言选择
-title_col, lang_col = st.columns([3, 1])
+title_col, lang_col = st.columns([4, 1])
 
 with title_col:
-    st.title(f"MoneyPrinterTurbo v{config.project_version}")
+    st.markdown(
+        '<div class="cockpit-app-header">'
+        f'<span class="cockpit-app-brand">MoneyPrinterTurbo</span>'
+        f'<span class="cockpit-app-version">v{config.project_version}</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 with lang_col:
     display_languages = []
@@ -389,6 +417,7 @@ with tab_config:
                 ("DeepSeek", "deepseek"),
                 ("ModelScope", "modelscope"),
                 ("Gemini", "gemini"),
+                ("Anthropic", "anthropic"),
                 ("Grok", "grok"),
                 ("Groq", "groq"),
                 ("Ollama", "ollama"),
@@ -399,6 +428,7 @@ with tab_config:
                 ("MiniMax", "minimax"),
                 ("MiMo", "mimo"),
                 ("Pollinations", "pollinations"),
+                ("AWS Bedrock", "bedrock"),
                 ("LiteLLM", "litellm"),
             ]
             llm_provider_ids = [provider_id for _, provider_id in llm_provider_options]
@@ -678,6 +708,17 @@ with tab_config:
                             - **Model Name**: Use 'openai-fast' or specify a model name
                             """
 
+            if llm_provider == "anthropic":
+                if not llm_model_name:
+                    llm_model_name = llm.DEFAULT_ANTHROPIC_MODEL
+                with llm_helper:
+                    tips = """
+                            ##### Anthropic (API direta)
+                            > [Console Anthropic](https://console.anthropic.com/settings/keys) — chave começa com `sk-ant-...`
+                            - **API Key**: cole a chave no campo abaixo
+                            - **Model Name**: `claude-sonnet-4-5-20250929` (Sonnet 4.5, recomendado)
+                            """
+
             if llm_provider == "litellm":
                 if not llm_model_name:
                     llm_model_name = "openai/gpt-4o-mini"
@@ -689,13 +730,105 @@ with tab_config:
                             - **Model Name**: LiteLLM format — `openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`, `bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0`, `gemini/gemini-2.5-flash`. See [full provider list](https://docs.litellm.ai/docs/providers)
                             """
 
-            if tips and config.ui["language"] == "zh":
+            if llm_provider == "bedrock":
+                if not llm_model_name:
+                    llm_model_name = llm.DEFAULT_BEDROCK_SELECT_MODEL
+                with llm_helper:
+                    tips = """
+                            ##### AWS Bedrock 配置说明
+                            > 在 [Bedrock 控制台](https://console.aws.amazon.com/bedrock/) 启用目标模型后再调用。
+                            - **Bedrock API Key**: 控制台 **API keys** 生成的 Bearer token（`ABSK...`）
+                            - **OpenAI GPT (Mantle)**: `openai.gpt-5.4` / `openai.gpt-5.5` — 区域 `us-east-2`（5.4 也支持 `us-west-2`）。无 `gpt-5.5-mini`，请用 `openai.gpt-5.4`
+                            - **Claude 4.5**: inference profile，例如 `global.anthropic.claude-sonnet-4-5-20250929-v1:0`，区域 `us-east-1`
+                            - **Model IDs**: [官方列表](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html)
+                            """
+
+            if tips and config.ui.get("language") in ("zh", "pt", "en"):
                 st.info(tips)
 
-            st_llm_api_key = st.text_input(
-                tr("API Key"), value=llm_api_key, type="password"
-            )
-            st_llm_base_url = st.text_input(tr("Base Url"), value=llm_base_url)
+            st_llm_api_key = ""
+            st_llm_base_url = ""
+            if llm_provider == "anthropic":
+                st_llm_api_key = st.text_input(
+                    tr("Anthropic API Key"),
+                    value=config.app.get("anthropic_api_key", ""),
+                    type="password",
+                    key="anthropic_api_key_input",
+                    help=tr("Anthropic API Key Help"),
+                )
+                if st_llm_api_key:
+                    config.app["anthropic_api_key"] = st_llm_api_key
+            elif llm_provider == "bedrock":
+                bedrock_region = config.app.get("bedrock_region", "us-east-1")
+                bedrock_api_key = config.app.get("bedrock_api_key", "")
+
+                st_bedrock_region = st.text_input(
+                    tr("AWS Region"),
+                    value=bedrock_region or "us-east-1",
+                    key="bedrock_region_input",
+                )
+                st_bedrock_api_key = st.text_input(
+                    tr("Bedrock API Key"),
+                    value=bedrock_api_key,
+                    type="password",
+                    key="bedrock_api_key_input",
+                    help=tr("Bedrock API Key Help"),
+                )
+                if st_bedrock_api_key:
+                    from app.services.llm import (
+                        is_valid_bedrock_bearer_token,
+                        looks_like_aws_access_key_id,
+                        looks_like_bedrock_iam_username,
+                    )
+
+                    if looks_like_bedrock_iam_username(st_bedrock_api_key):
+                        st.warning(tr("Bedrock API Key IAM Username Hint"))
+                    elif looks_like_aws_access_key_id(st_bedrock_api_key):
+                        st.warning(tr("Bedrock API Key IAM Hint"))
+                    elif not is_valid_bedrock_bearer_token(st_bedrock_api_key):
+                        st.warning(tr("Bedrock API Key Invalid Prefix"))
+                if st_bedrock_region:
+                    config.app["bedrock_region"] = st_bedrock_region
+                if st_bedrock_api_key:
+                    config.app["bedrock_api_key"] = st_bedrock_api_key
+
+                with st.expander(tr("Bedrock IAM Credentials"), expanded=False):
+                    bedrock_access_key = config.app.get("bedrock_aws_access_key_id", "")
+                    bedrock_secret_key = config.app.get(
+                        "bedrock_aws_secret_access_key", ""
+                    )
+                    bedrock_session_token = config.app.get(
+                        "bedrock_aws_session_token", ""
+                    )
+                    st_bedrock_access_key = st.text_input(
+                        tr("AWS Access Key ID"),
+                        value=bedrock_access_key,
+                        type="password",
+                        key="bedrock_aws_access_key_id_input",
+                    )
+                    st_bedrock_secret_key = st.text_input(
+                        tr("AWS Secret Access Key"),
+                        value=bedrock_secret_key,
+                        type="password",
+                        key="bedrock_aws_secret_access_key_input",
+                    )
+                    st_bedrock_session_token = st.text_input(
+                        tr("AWS Session Token"),
+                        value=bedrock_session_token,
+                        type="password",
+                        key="bedrock_aws_session_token_input",
+                    )
+                    if st_bedrock_access_key:
+                        config.app["bedrock_aws_access_key_id"] = st_bedrock_access_key
+                    if st_bedrock_secret_key:
+                        config.app["bedrock_aws_secret_access_key"] = st_bedrock_secret_key
+                    if st_bedrock_session_token:
+                        config.app["bedrock_aws_session_token"] = st_bedrock_session_token
+            else:
+                st_llm_api_key = st.text_input(
+                    tr("API Key"), value=llm_api_key, type="password"
+                )
+                st_llm_base_url = st.text_input(tr("Base Url"), value=llm_base_url)
             st_llm_model_name = ""
             if llm_provider != "ernie":
                 if llm_provider == "groq":
@@ -731,6 +864,56 @@ with tab_config:
                             st.caption(
                                 "Add a Groq API key to load available models automatically."
                             )
+                elif llm_provider == "anthropic":
+                    anthropic_models = list(getattr(llm, "ANTHROPIC_MODEL_OPTIONS", []) or [])
+                    if llm_model_name and llm_model_name not in anthropic_models:
+                        anthropic_models.insert(0, llm_model_name)
+                    selected_index = 0
+                    if llm_model_name in anthropic_models:
+                        selected_index = anthropic_models.index(llm_model_name)
+                    st_llm_model_name = st.selectbox(
+                        tr("Model Name"),
+                        options=anthropic_models,
+                        index=selected_index,
+                        key="anthropic_model_name_select",
+                    )
+                    anthropic_custom_model = st.text_input(
+                        tr("Anthropic Custom Model ID"),
+                        value="",
+                        key="anthropic_custom_model_input",
+                        placeholder="claude-sonnet-4-5-20250929",
+                    )
+                    if anthropic_custom_model.strip():
+                        st_llm_model_name = anthropic_custom_model.strip()
+                elif llm_provider == "bedrock":
+                    from app.services.llm import is_bedrock_mantle_responses_model
+
+                    bedrock_models = list(getattr(llm, "BEDROCK_MODEL_OPTIONS", []) or [])
+                    if not bedrock_models:
+                        st.error(tr("Bedrock Model List Unavailable"))
+                        bedrock_models = [llm_model_name or getattr(llm, "DEFAULT_BEDROCK_SELECT_MODEL", "")]
+                    if llm_model_name and llm_model_name not in bedrock_models:
+                        bedrock_models.insert(0, llm_model_name)
+                    selected_index = 0
+                    if llm_model_name in bedrock_models:
+                        selected_index = bedrock_models.index(llm_model_name)
+                    st_llm_model_name = st.selectbox(
+                        tr("Model Name"),
+                        options=bedrock_models,
+                        index=selected_index,
+                        key="bedrock_model_name_select",
+                    )
+                    st.caption(tr("Bedrock Model Select Hint"))
+                    bedrock_custom_model = st.text_input(
+                        tr("Bedrock Custom Model ID"),
+                        value="",
+                        key="bedrock_custom_model_input",
+                        placeholder="anthropic.claude-...",
+                    )
+                    if bedrock_custom_model.strip():
+                        st_llm_model_name = bedrock_custom_model.strip()
+                    if is_bedrock_mantle_responses_model(st_llm_model_name):
+                        st.caption(tr("Bedrock Mantle OpenAI Hint"))
                 else:
                     st_llm_model_name = st.text_input(
                         tr("Model Name"),
@@ -746,8 +929,6 @@ with tab_config:
                 config.app[f"{llm_provider}_api_key"] = st_llm_api_key
             if st_llm_base_url:
                 config.app[f"{llm_provider}_base_url"] = st_llm_base_url
-            if st_llm_model_name:
-                config.app[f"{llm_provider}_model_name"] = st_llm_model_name
             if llm_provider == "ernie":
                 st_llm_secret_key = st.text_input(
                     tr("Secret Key"), value=llm_secret_key, type="password"
@@ -797,13 +978,7 @@ with tab_config:
             save_keys_to_config("coverr_api_keys", coverr_api_key)
 
 with tab_create:
-    cockpit.render_stepper(tr, active_index=1 if st.session_state.get("preview_ready") else 0)
-
-    llm_provider = config.app.get("llm_provider", "").lower()
-    panel = st.columns(3)
-    left_panel = panel[0]
-    middle_panel = panel[1]
-    right_panel = panel[2]
+    cockpit._init_cockpit_session_state()
 
     params = VideoParams(video_subject="")
     params.match_materials_to_script = bool(
@@ -814,1084 +989,285 @@ with tab_create:
     uploaded_files = []
     uploaded_audio_file = None
 
-    with left_panel:
-        with st.container(border=True):
-            st.write(tr("Video Script Settings"))
-            params.video_subject = st.text_input(
-                tr("Video Subject"),
-                key="video_subject",
-            ).strip()
-
-            video_languages = [
-                (tr("Auto Detect"), ""),
-            ]
-            for code in support_locales:
-                video_languages.append((code, code))
-
-            selected_index = st.selectbox(
-                tr("Script Language"),
-                index=0,
-                options=range(
-                    len(video_languages)
-                ),  # Use the index as the internal option value
-                format_func=lambda x: video_languages[x][
-                    0
-                ],  # The label is displayed to the user
-            )
-            params.video_language = video_languages[selected_index][1]
-
-            with st.expander(tr("Advanced Script Settings"), expanded=False):
-                params.paragraph_number = st.slider(
-                    tr("Script Paragraph Number"),
-                    min_value=llm.MIN_SCRIPT_PARAGRAPH_NUMBER,
-                    max_value=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
-                    value=st.session_state.get("paragraph_number_input", 1),
-                    key="paragraph_number_input",
-                )
-                params.video_script_prompt = st.text_area(
-                    tr("Custom Script Requirements"),
-                    height=100,
-                    max_chars=llm.MAX_SCRIPT_PROMPT_LENGTH,
-                    placeholder=tr("Custom Script Requirements Placeholder"),
-                    key="video_script_prompt",
-                ).strip()
-
-                use_custom_system_prompt = st.checkbox(
-                    tr("Use Custom System Prompt"),
-                    help=tr("Use Custom System Prompt Help"),
-                    key="use_custom_system_prompt",
-                )
-
-                if use_custom_system_prompt:
-                    custom_system_prompt = st.text_area(
-                        tr("Custom System Prompt"),
-                        height=240,
-                        max_chars=llm.MAX_SCRIPT_SYSTEM_PROMPT_LENGTH,
-                        key="custom_system_prompt",
-                    ).strip()
-                    params.custom_system_prompt = custom_system_prompt
-                else:
-                    params.custom_system_prompt = ""
-
-                script_mode_options = [
-                    (tr("Script Mode Auto"), "auto"),
-                    (tr("Script Mode Verbatim"), "verbatim"),
-                    (tr("Script Mode Polish"), "polish"),
-                ]
-                saved_script_mode = st.session_state.get("script_mode", "auto")
-                script_mode_values = [value for _, value in script_mode_options]
-                if saved_script_mode not in script_mode_values:
-                    saved_script_mode = "auto"
-                script_mode = st.radio(
-                    tr("Script Mode"),
-                    options=script_mode_values,
-                    format_func=lambda value: next(
-                        label for label, opt in script_mode_options if opt == value
-                    ),
-                    index=script_mode_values.index(saved_script_mode),
-                    horizontal=True,
-                    key="script_mode",
-                )
-                cockpit.assign_model_fields(params, script_mode=script_mode)
-
-            params.video_script = st.text_area(
-                tr("Video Script"), value=st.session_state["video_script"], height=280
-            )
+    active_slug = st.session_state.get("active_channel")
+    active_channel_config = {}
+    channel_runtime = st.session_state.get("channel_runtime") or {}
+    if active_slug:
+        try:
+            active_channel_config = cockpit.load_channel_config(active_slug)
+            if not channel_runtime:
+                channel_runtime = cockpit.build_runtime_config(active_slug)
+        except FileNotFoundError:
             active_channel_config = {}
-            active_slug = st.session_state.get("active_channel")
-            if active_slug:
-                try:
-                    active_channel_config = cockpit.load_channel_config(active_slug)
-                except FileNotFoundError:
-                    active_channel_config = {}
-            cockpit.render_scene_breakdown(
-                params.video_script,
-                active_channel_config.get("scene_structure"),
-                tr,
-            )
-            title_enabled = st.checkbox(
-                tr("Title Overlay Enabled"),
+            channel_runtime = {}
+
+    video_source = str(
+        st.session_state.get(
+            "cockpit_video_source",
+            config.ui.get("video_source", config.app.get("video_source", "collector")),
+        )
+        or "collector"
+    )
+    cockpit.render_ops_bar(tr, video_source)
+    cockpit.render_pipeline_nav(tr)
+    cockpit.render_production_summary(channel_runtime, tr)
+
+    main_col, sidebar_col = st.columns([13, 7])
+    main_panel = main_col
+    side_panel = sidebar_col
+
+    active_step = int(st.session_state.get("cockpit_active_step", 0) or 0)
+    active_step = max(0, min(active_step, cockpit.PIPELINE_STEP_COUNT - 1))
+    step_id = cockpit.STEP_IDS[active_step]
+
+    inspector_callbacks = InspectorCallbacks(
+        get_all_fonts=get_all_fonts,
+        sync_chatterbox=_sync_chatterbox_config_from_session_state,
+        detect_audio_mime=_detect_audio_mime,
+        default_chatterbox_base_url=DEFAULT_CHATTERBOX_BASE_URL,
+        default_chatterbox_model=DEFAULT_CHATTERBOX_MODEL,
+        default_chatterbox_voices=DEFAULT_CHATTERBOX_VOICES,
+        parse_chatterbox_voices=_parse_chatterbox_voices,
+        llm_min_paragraphs=llm.MIN_SCRIPT_PARAGRAPH_NUMBER,
+        llm_max_paragraphs=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
+        llm_max_prompt=llm.MAX_SCRIPT_PROMPT_LENGTH,
+        llm_max_system_prompt=llm.MAX_SCRIPT_SYSTEM_PROMPT_LENGTH,
+    )
+
+    def _render_idea_editor() -> None:
+        cockpit.render_document_stage(tr("Cockpit Step Idea"))
+        params.video_subject = st.text_input(
+            tr("Video Subject"),
+            key="video_subject",
+            label_visibility="collapsed",
+            placeholder=tr("Video Subject"),
+        ).strip()
+
+        cockpit.render_document_divider()
+        cockpit.render_document_section_label(tr("Script Language"))
+        video_languages = [(tr("Auto Detect"), "")]
+        for code in support_locales:
+            video_languages.append((code, code))
+
+        selected_index = st.selectbox(
+            tr("Script Language"),
+            index=0,
+            options=range(len(video_languages)),
+            format_func=lambda x: video_languages[x][0],
+            label_visibility="collapsed",
+        )
+        params.video_language = video_languages[selected_index][1]
+
+    def _render_script_editor() -> None:
+        cockpit.render_document_stage(tr("Cockpit Step Script"))
+        params.video_script = st.text_area(
+            tr("Video Script"),
+            value=st.session_state["video_script"],
+            height=420,
+            label_visibility="collapsed",
+        )
+        cockpit.render_scene_breakdown(
+            params.video_script,
+            active_channel_config.get("scene_structure"),
+            tr,
+        )
+
+        cockpit.render_document_divider()
+        cockpit.render_document_section_label(tr("Title Overlay Enabled"))
+        title_enabled = st.checkbox(
+            tr("Title Overlay Enabled"),
+            value=st.session_state.get(
+                "title_enabled",
+                active_channel_config.get("title_enabled", False),
+            ),
+            key="title_enabled",
+            label_visibility="collapsed",
+        )
+        cockpit.assign_model_fields(params, title_enabled=title_enabled)
+        if title_enabled:
+            title_text = st.text_input(
+                tr("Title Overlay Text"),
                 value=st.session_state.get(
-                    "title_enabled",
-                    active_channel_config.get("title_enabled", False),
+                    "title_text",
+                    active_channel_config.get("title_text", params.video_subject),
                 ),
-                key="title_enabled",
+                key="title_text",
+            ).strip()
+            title_duration = st.slider(
+                tr("Title Overlay Duration"),
+                min_value=1.0,
+                max_value=8.0,
+                value=float(
+                    st.session_state.get(
+                        "title_duration",
+                        active_channel_config.get("title_duration", 3.0),
+                    )
+                ),
+                step=0.5,
+                key="title_duration",
             )
-            cockpit.assign_model_fields(params, title_enabled=title_enabled)
-            if title_enabled:
-                title_text = st.text_input(
-                    tr("Title Overlay Text"),
-                    value=st.session_state.get(
-                        "title_text",
-                        active_channel_config.get("title_text", params.video_subject),
-                    ),
-                    key="title_text",
-                ).strip()
-                title_duration = st.slider(
-                    tr("Title Overlay Duration"),
-                    min_value=1.0,
-                    max_value=8.0,
-                    value=float(
-                        st.session_state.get(
-                            "title_duration",
-                            active_channel_config.get("title_duration", 3.0),
-                        )
-                    ),
-                    step=0.5,
-                    key="title_duration",
-                )
-                cockpit.assign_model_fields(
-                    params,
-                    title_text=title_text,
-                    title_duration=title_duration,
-                )
-            else:
-                cockpit.assign_model_fields(params, title_text="")
+            cockpit.assign_model_fields(
+                params,
+                title_text=title_text,
+                title_duration=title_duration,
+            )
+        else:
+            cockpit.assign_model_fields(params, title_text="")
 
-            if st.button(
-                tr("Generate Video Script and Keywords"), key="auto_generate_script"
-            ):
-                with st.spinner(tr("Generating Video Script and Keywords")):
-                    if script_mode == "polish":
-                        if not params.video_script.strip():
-                            st.error(tr("Script Mode Polish Brief Required"))
-                        else:
-                            script = llm.polish_script(
-                                brief=params.video_script.strip(),
-                                video_subject=params.video_subject,
-                                duration_seconds=max(30, params.paragraph_number * 25),
-                                language=params.video_language or "",
-                            )
-                            terms = llm.generate_terms(
-                                params.video_subject,
-                                script,
-                                amount=8 if params.match_materials_to_script else 5,
-                                match_script_order=params.match_materials_to_script,
-                            )
-                            if "Error: " in terms:
-                                st.error(tr(terms))
-                            else:
-                                st.session_state["video_script"] = script
-                                st.session_state["video_terms"] = ", ".join(terms)
-                    elif script_mode == "verbatim" and params.video_script.strip():
-                        script = params.video_script.strip()
-                        terms = llm.generate_terms(
-                            params.video_subject,
-                            script,
-                            amount=8 if params.match_materials_to_script else 5,
-                            match_script_order=params.match_materials_to_script,
-                        )
-                        if "Error: " in terms:
-                            st.error(tr(terms))
-                        else:
-                            st.session_state["video_terms"] = ", ".join(terms)
-                    else:
-                        script = llm.generate_script(
-                            video_subject=params.video_subject,
-                            language=params.video_language,
-                            paragraph_number=params.paragraph_number,
-                            video_script_prompt=params.video_script_prompt,
-                            custom_system_prompt=params.custom_system_prompt,
-                        )
-                        terms = llm.generate_terms(
-                            params.video_subject,
-                            script,
-                            amount=8 if params.match_materials_to_script else 5,
-                            match_script_order=params.match_materials_to_script,
-                        )
-                        if "Error: " in script:
-                            st.error(tr(script))
-                        elif "Error: " in terms:
-                            st.error(tr(terms))
-                        else:
-                            st.session_state["video_script"] = script
-                            st.session_state["video_terms"] = ", ".join(terms)
-            if st.button(tr("Generate Video Keywords"), key="auto_generate_terms"):
-                if not params.video_script:
-                    st.error(tr("Please Enter the Video Subject"))
-                    st.stop()
+        cockpit.render_document_divider()
+        cockpit.render_document_section_label(tr("Video Keywords"))
+        st.markdown('<div class="cockpit-btn-important">', unsafe_allow_html=True)
+        btn_cols = st.columns(2)
+        with btn_cols[0]:
+            if st.button(tr("Cockpit Generate Script"), key="auto_generate_script"):
+                st.session_state["cockpit_trigger_generate_script"] = True
+        with btn_cols[1]:
+            if st.button(tr("Cockpit Generate Keywords"), key="auto_generate_terms"):
+                st.session_state["cockpit_trigger_generate_keywords"] = True
+        st.markdown("</div>", unsafe_allow_html=True)
 
-                with st.spinner(tr("Generating Video Keywords")):
+        params.video_terms = st.text_area(
+            tr("Video Keywords"),
+            value=st.session_state["video_terms"],
+            label_visibility="collapsed",
+            height=120,
+        )
+
+    def _render_collector_editor() -> None:
+        if cockpit.render_collector_panel(params, tr):
+            cockpit.run_collector_fetch(params, tr)
+
+    def _render_preview_editor() -> None:
+        preview_btn, include_audio, skip_gate = cockpit.render_preview_editor(
+            params,
+            channel_runtime,
+            tr,
+            video_source=video_source,
+        )
+        st.session_state["_cockpit_preview_btn"] = preview_btn
+        st.session_state["_cockpit_preview_audio"] = include_audio
+        st.session_state["cockpit_skip_preview"] = skip_gate
+
+    def _render_render_editor() -> None:
+        st.session_state["_cockpit_full_btn"] = cockpit.render_render_editor(params, tr)
+
+    def _render_result_editor() -> None:
+        cockpit.render_result_editor(tr, open_folder_cb=open_task_folder)
+
+    step_renderers = {
+        0: _render_idea_editor,
+        1: _render_script_editor,
+        2: _render_collector_editor,
+        3: _render_preview_editor,
+        4: _render_render_editor,
+        5: _render_result_editor,
+    }
+
+    with main_panel:
+        st.markdown('<div class="cockpit-doc-workspace">', unsafe_allow_html=True)
+        step_renderers[active_step]()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    preview_button = bool(st.session_state.pop("_cockpit_preview_btn", False))
+    include_preview_audio = bool(st.session_state.pop("_cockpit_preview_audio", False))
+    full_button = bool(st.session_state.pop("_cockpit_full_btn", False))
+    skip_preview = bool(st.session_state.get("cockpit_skip_preview", False))
+
+    with side_panel:
+        st.markdown('<div class="cockpit-inspector-panel">', unsafe_allow_html=True)
+        cockpit.render_stage_context(step_id, channel_runtime, params, tr)
+        st.markdown(
+            f'<div class="cockpit-section-title cockpit-inspector-settings-title">'
+            f'{tr("Cockpit Stage Settings")}</div>',
+            unsafe_allow_html=True,
+        )
+        uploaded_files, uploaded_audio_file = cockpit.render_stage_inspector(
+            step_id,
+            channel_runtime,
+            params,
+            tr,
+            inspector_callbacks=inspector_callbacks,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    cockpit.sync_params_from_ui(params)
+    video_source = params.video_source or video_source
+
+    if st.session_state.pop("cockpit_trigger_generate_script", False):
+        with st.spinner(tr("Generating Video Script and Keywords")):
+            current_script_mode = st.session_state.get("script_mode", "auto")
+            if current_script_mode == "polish":
+                if not params.video_script.strip():
+                    st.error(tr("Script Mode Polish Brief Required"))
+                else:
+                    script = llm.polish_script(
+                        brief=params.video_script.strip(),
+                        video_subject=params.video_subject,
+                        duration_seconds=max(30, params.paragraph_number * 25),
+                        language=params.video_language or "",
+                    )
                     terms = llm.generate_terms(
                         params.video_subject,
-                        params.video_script,
+                        script,
                         amount=8 if params.match_materials_to_script else 5,
                         match_script_order=params.match_materials_to_script,
                     )
-                    if "Error: " in terms:
+                    if _is_terms_error(terms):
                         st.error(tr(terms))
                     else:
-                        st.session_state["video_terms"] = ", ".join(terms)
-
-            params.video_terms = st.text_area(
-                tr("Video Keywords"), value=st.session_state["video_terms"]
-            )
-
-    with middle_panel:
-        with st.container(border=True):
-            st.write(tr("Video Settings"))
-            video_concat_modes = [
-                (tr("Sequential"), "sequential"),
-                (tr("Random"), "random"),
-            ]
-            video_sources = [
-                (tr("Collector (local cache)"), "collector"),
-                (tr("Pexels"), "pexels"),
-                (tr("Pixabay"), "pixabay"),
-                (tr("Coverr"), "coverr"),
-                (tr("Local file"), "local"),
-                (tr("TikTok"), "douyin"),
-                (tr("Bilibili"), "bilibili"),
-                (tr("Xiaohongshu"), "xiaohongshu"),
-            ]
-
-            saved_video_source_name = config.ui.get(
-                "video_source",
-                config.app.get("video_source", "pexels"),
-            )
-            if saved_video_source_name == "stock":
-                saved_video_source_name = "pexels"
-            primary_video_sources = [
-                (tr("Collector (local cache)"), "collector"),
-                (tr("Pexels"), "pexels"),
-                (tr("Local file"), "local"),
-            ]
-            primary_values = {value for _, value in primary_video_sources}
-            card_default = (
-                saved_video_source_name
-                if saved_video_source_name in primary_values
-                else "collector"
-            )
-            params.video_source = cockpit.render_option_cards(
-                tr("Video Source"),
-                primary_video_sources,
-                card_default,
-                "cockpit_video_source",
-            )
-            other_video_sources = [
-                (label, value)
-                for label, value in video_sources
-                if value not in primary_values
-            ]
-            with st.expander(tr("Cockpit More Video Sources"), expanded=False):
-                other_values = [value for _, value in other_video_sources]
-                other_index = (
-                    other_values.index(saved_video_source_name)
-                    if saved_video_source_name in other_values
-                    else 0
+                        st.session_state["video_script"] = script
+                        st.session_state["video_terms"] = _format_generated_terms(terms)
+                        st.session_state["cockpit_active_step"] = 1
+            elif current_script_mode == "verbatim" and params.video_script.strip():
+                script = params.video_script.strip()
+                terms = llm.generate_terms(
+                    params.video_subject,
+                    script,
+                    amount=8 if params.match_materials_to_script else 5,
+                    match_script_order=params.match_materials_to_script,
                 )
-                other_selected_index = st.selectbox(
-                    tr("Alternative Video Source"),
-                    options=range(len(other_video_sources)),
-                    format_func=lambda x: other_video_sources[x][0],
-                    index=other_index,
-                    key="cockpit_other_video_source",
-                )
-                if st.button(
-                    tr("Cockpit Use Alternative Source"),
-                    key="cockpit_apply_other_video_source",
-                ):
-                    st.session_state["cockpit_video_source"] = other_video_sources[
-                        other_selected_index
-                    ][1]
-                    st.rerun()
-            if saved_video_source_name not in primary_values:
-                params.video_source = saved_video_source_name
-                other_label = next(
-                    (
-                        label
-                        for label, value in video_sources
-                        if value == saved_video_source_name
-                    ),
-                    saved_video_source_name,
-                )
-                st.caption(f"{tr('Cockpit Active Source')}: {other_label}")
-            config.ui["video_source"] = params.video_source
-
-            if params.video_source == "local":
-                # Streamlit 的文件类型校验对扩展名大小写敏感，这里同时放行大小写两种形式。
-                local_file_types = ["mp4", "mov", "avi", "flv", "mkv", "jpg", "jpeg", "png"]
-                uploaded_files = st.file_uploader(
-                    tr("Upload Local Files"),
-                    type=local_file_types + [file_type.upper() for file_type in local_file_types],
-                    accept_multiple_files=True,
-                )
-
-            selected_index = st.selectbox(
-                tr("Video Concat Mode"),
-                index=1,
-                options=range(
-                    len(video_concat_modes)
-                ),  # Use the index as the internal option value
-                format_func=lambda x: video_concat_modes[x][
-                    0
-                ],  # The label is displayed to the user
-            )
-            params.video_concat_mode = VideoConcatMode(
-                video_concat_modes[selected_index][1]
-            )
-
-            # 视频转场模式
-            video_transition_modes = [
-                (tr("None"), VideoTransitionMode.none.value),
-                (tr("Shuffle"), VideoTransitionMode.shuffle.value),
-                (tr("FadeIn"), VideoTransitionMode.fade_in.value),
-                (tr("FadeOut"), VideoTransitionMode.fade_out.value),
-                (tr("SlideIn"), VideoTransitionMode.slide_in.value),
-                (tr("SlideOut"), VideoTransitionMode.slide_out.value),
-            ]
-            selected_index = st.selectbox(
-                tr("Video Transition Mode"),
-                options=range(len(video_transition_modes)),
-                format_func=lambda x: video_transition_modes[x][0],
-                index=0,
-            )
-            params.video_transition_mode = VideoTransitionMode(
-                video_transition_modes[selected_index][1]
-            )
-
-            video_aspect_ratios = [
-                (tr("Portrait"), VideoAspect.portrait.value),
-                (tr("Landscape"), VideoAspect.landscape.value),
-            ]
-            saved_video_aspect = config.ui.get("video_aspect", VideoAspect.portrait.value)
-            if isinstance(saved_video_aspect, VideoAspect):
-                saved_video_aspect = saved_video_aspect.value
-            default_aspect = (
-                VideoAspect.landscape.value
-                if params.video_source == "coverr"
-                else saved_video_aspect
-            )
-            params.video_aspect = VideoAspect(
-                cockpit.render_option_cards(
-                    tr("Video Ratio"),
-                    video_aspect_ratios,
-                    default_aspect,
-                    f"cockpit_video_aspect_{params.video_source}",
-                )
-            )
-            config.ui["video_aspect"] = params.video_aspect.value
-
-            params.video_clip_duration = st.selectbox(
-                tr("Clip Duration"), options=[2, 3, 4, 5, 6, 7, 8, 9, 10], index=1
-            )
-            params.video_count = st.selectbox(
-                tr("Number of Videos Generated Simultaneously"),
-                options=[1, 2, 3, 4, 5],
-                index=0,
-            )
-
-            with st.expander(tr("Advanced Video Settings"), expanded=False):
-                # 默认关闭，避免影响老用户的随机素材体验。开启后只改变关键词和素材
-                # 下载/拼接顺序，用于改善画面主题早于或晚于旁白的问题。
-                params.match_materials_to_script = st.checkbox(
-                    tr("Match Materials to Script Order"),
-                    help=tr("Match Materials to Script Order Help"),
-                    key="match_materials_to_script",
-                )
-                config.app["match_materials_to_script"] = params.match_materials_to_script
-
-                video_codec_options = [
-                    ("libx264 (CPU)", "libx264"),
-                    ("NVIDIA NVENC (h264_nvenc)", "h264_nvenc"),
-                    ("AMD AMF (h264_amf)", "h264_amf"),
-                    ("Intel QSV (h264_qsv)", "h264_qsv"),
-                    ("Windows MediaFoundation (h264_mf)", "h264_mf"),
-                    ("macOS VideoToolbox (h264_videotoolbox)", "h264_videotoolbox"),
-                ]
-                saved_video_codec = config.app.get("video_codec", "libx264")
-                saved_video_codec_values = [item[1] for item in video_codec_options]
-                if saved_video_codec not in saved_video_codec_values:
-                    saved_video_codec = "libx264"
-                selected_codec_index = saved_video_codec_values.index(saved_video_codec)
-                selected_codec_index = st.selectbox(
-                    tr("Video Encoder"),
-                    options=range(len(video_codec_options)),
-                    index=selected_codec_index,
-                    format_func=lambda x: video_codec_options[x][0],
-                    help=tr("Video Encoder Help"),
-                )
-                config.app["video_codec"] = video_codec_options[selected_codec_index][1]
-        with st.container(border=True):
-            st.write(tr("Audio Settings"))
-
-            # 添加TTS服务器选择下拉框
-            tts_servers = [
-                (voice.NO_VOICE_NAME, tr("No Voice")),
-                ("azure-tts-v1", "Azure TTS V1"),
-                ("azure-tts-v2", "Azure TTS V2"),
-                ("siliconflow", "SiliconFlow TTS"),
-                ("gemini-tts", "Google Gemini TTS"),
-                ("mimo-tts", "Xiaomi MiMo TTS"),
-                ("elevenlabs", "ElevenLabs TTS"),
-                ("chatterbox", "Chatterbox TTS"),
-            ]
-
-            # 获取保存的TTS服务器，默认为v1
-            saved_tts_server = config.ui.get("tts_server", "azure-tts-v1")
-            saved_tts_server_index = 0
-            for i, (server_value, _) in enumerate(tts_servers):
-                if server_value == saved_tts_server:
-                    saved_tts_server_index = i
-                    break
-
-            selected_tts_server_index = st.selectbox(
-                tr("TTS Servers"),
-                options=range(len(tts_servers)),
-                format_func=lambda x: tts_servers[x][1],
-                index=saved_tts_server_index,
-            )
-
-            selected_tts_server = tts_servers[selected_tts_server_index][0]
-            config.ui["tts_server"] = selected_tts_server
-
-            # 根据选择的TTS服务器获取声音列表
-            filtered_voices = []
-
-            if selected_tts_server == voice.NO_VOICE_NAME:
-                # 无配音是显式模式，只提供一个稳定 sentinel。这样普通 TTS 的空配置
-                # 不会被误判为静音，后端也能继续通过同一条音频/字幕流程生成视频。
-                filtered_voices = [voice.NO_VOICE_NAME]
-            elif selected_tts_server == "siliconflow":
-                # 获取硅基流动的声音列表
-                filtered_voices = voice.get_siliconflow_voices()
-            elif selected_tts_server == "gemini-tts":
-                # 获取Gemini TTS的声音列表
-                filtered_voices = voice.get_gemini_voices()
-            elif selected_tts_server == "mimo-tts":
-                # 获取 Xiaomi MiMo TTS 的预置音色列表
-                filtered_voices = voice.get_mimo_voices()
-            elif selected_tts_server == "elevenlabs":
-                # Read from session_state first so the API key is available before
-                # the Play Voice button runs (which is earlier in the script than
-                # the API key text_input widget).
-                saved_elevenlabs_api_key = st.session_state.get(
-                    "elevenlabs_api_key_input",
-                    config.elevenlabs.get("api_key", ""),
-                )
-                if saved_elevenlabs_api_key:
-                    config.elevenlabs["api_key"] = saved_elevenlabs_api_key
-                cache_key = f"elevenlabs_voices_{saved_elevenlabs_api_key}"
-                if cache_key not in st.session_state:
-                    st.session_state[cache_key] = voice.get_elevenlabs_voices(
-                        saved_elevenlabs_api_key
-                    )
-                filtered_voices = st.session_state[cache_key]
-            elif selected_tts_server == "chatterbox":
-                # 自托管 Chatterbox 服务的预置音色（来自 [chatterbox] voices 配置）
-                _sync_chatterbox_config_from_session_state()
-                filtered_voices = voice.get_chatterbox_voices()
-            else:
-                # 获取Azure的声音列表
-                all_voices = voice.get_all_azure_voices(filter_locals=None)
-
-                # 根据选择的TTS服务器筛选声音
-                for v in all_voices:
-                    if selected_tts_server == "azure-tts-v2":
-                        # V2版本的声音名称中包含"v2"
-                        if "V2" in v:
-                            filtered_voices.append(v)
-                    else:
-                        # V1版本的声音名称中不包含"v2"
-                        if "V2" not in v:
-                            filtered_voices.append(v)
-
-            if selected_tts_server == voice.NO_VOICE_NAME:
-                friendly_names = {voice.NO_VOICE_NAME: tr("No Voice")}
-            else:
-                def _friendly(v):
-                    if voice.is_elevenlabs_voice(v):
-                        parts = v.split(":", 2)
-                        return parts[2] if len(parts) >= 3 else v
-                    if voice.is_chatterbox_voice(v):
-                        name = v.split(":", 1)[1] if ":" in v else v
-                        return name.replace("-Female", "").replace("-Male", "")
-                    return (
-                        v.replace("Female", tr("Female"))
-                        .replace("Male", tr("Male"))
-                        .replace("Neural", "")
-                    )
-                friendly_names = {v: _friendly(v) for v in filtered_voices}
-
-            saved_voice_name = config.ui.get("voice_name", "")
-            saved_voice_name_index = 0
-
-            # 检查保存的声音是否在当前筛选的声音列表中
-            if saved_voice_name in friendly_names:
-                saved_voice_name_index = list(friendly_names.keys()).index(saved_voice_name)
-            else:
-                # 如果不在，则根据当前UI语言选择一个默认声音
-                for i, v in enumerate(filtered_voices):
-                    if v.lower().startswith(st.session_state["ui_language"].lower()):
-                        saved_voice_name_index = i
-                        break
-
-            # 如果没有找到匹配的声音，使用第一个声音
-            if saved_voice_name_index >= len(friendly_names) and friendly_names:
-                saved_voice_name_index = 0
-
-            # 确保有声音可选
-            if friendly_names:
-                selected_friendly_name = st.selectbox(
-                    tr("Speech Synthesis"),
-                    options=list(friendly_names.values()),
-                    index=min(saved_voice_name_index, len(friendly_names) - 1)
-                    if friendly_names
-                    else 0,
-                )
-
-                voice_name = list(friendly_names.keys())[
-                    list(friendly_names.values()).index(selected_friendly_name)
-                ]
-                params.voice_name = voice_name
-                config.ui["voice_name"] = voice_name
-            else:
-                # 如果没有声音可选，显示提示信息
-                st.warning(
-                    tr(
-                        "No voices available for the selected TTS server. Please select another server."
-                    )
-                )
-                voice_name = ""
-                params.voice_name = ""
-                config.ui["voice_name"] = ""
-
-            # 无配音模式会生成静音占位音频，不展示试听按钮，避免用户误以为需要测试声音。
-            if (
-                friendly_names
-                and selected_tts_server != voice.NO_VOICE_NAME
-                and st.button(tr("Play Voice"))
-            ):
-                if selected_tts_server == "chatterbox":
-                    _sync_chatterbox_config_from_session_state()
-                play_content = params.video_subject
-                if not play_content:
-                    play_content = params.video_script
-                if not play_content:
-                    # For ElevenLabs voices, detect language from the display name
-                    # so the test text matches the voice's language.
-                    if voice.is_elevenlabs_voice(voice_name):
-                        parts = voice_name.split(":", 2)
-                        display = parts[2] if len(parts) >= 3 else ""
-                        _vi_chars = set("àáâãèéêìíòóôõùúýăđơưÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÝĂĐƠƯ")
-                        if any(c in _vi_chars for c in display):
-                            play_content = "Xin chào, đây là đoạn âm thanh thử nghiệm giọng nói."
-                        else:
-                            play_content = tr("Voice Example")
-                    else:
-                        play_content = tr("Voice Example")
-                with st.spinner(tr("Synthesizing Voice")):
-                    temp_dir = utils.storage_dir("temp", create=True)
-                    audio_file = os.path.join(temp_dir, f"tmp-voice-{str(uuid4())}.mp3")
-                    sub_maker = voice.tts(
-                        text=play_content,
-                        voice_name=voice_name,
-                        voice_rate=params.voice_rate,
-                        voice_file=audio_file,
-                        voice_volume=params.voice_volume,
-                    )
-                    # if the voice file generation failed, try again with a default content.
-                    if not sub_maker:
-                        play_content = "This is a example voice. if you hear this, the voice synthesis failed with the original content."
-                        sub_maker = voice.tts(
-                            text=play_content,
-                            voice_name=voice_name,
-                            voice_rate=params.voice_rate,
-                            voice_file=audio_file,
-                            voice_volume=params.voice_volume,
-                        )
-
-                    if sub_maker and os.path.exists(audio_file):
-                        with open(audio_file, "rb") as f:
-                            audio_bytes = f.read()
-                        if audio_bytes:
-                            st.audio(
-                                audio_bytes,
-                                format=_detect_audio_mime(audio_file, audio_bytes),
-                            )
-                        else:
-                            logger.error(f"voice preview audio file is empty: {audio_file}")
-                        if os.path.exists(audio_file):
-                            os.remove(audio_file)
-
-            # 当选择V2版本或者声音是V2声音时，显示服务区域和API key输入框
-            if selected_tts_server == "azure-tts-v2" or (
-                voice_name and voice.is_azure_v2_voice(voice_name)
-            ):
-                saved_azure_speech_region = config.azure.get("speech_region", "")
-                saved_azure_speech_key = config.azure.get("speech_key", "")
-                azure_speech_region = st.text_input(
-                    tr("Speech Region"),
-                    value=saved_azure_speech_region,
-                    key="azure_speech_region_input",
-                )
-                azure_speech_key = st.text_input(
-                    tr("Speech Key"),
-                    value=saved_azure_speech_key,
-                    type="password",
-                    key="azure_speech_key_input",
-                )
-                config.azure["speech_region"] = azure_speech_region
-                config.azure["speech_key"] = azure_speech_key
-
-            # 当选择硅基流动时，显示API key输入框和说明信息
-            if selected_tts_server == "siliconflow" or (
-                voice_name and voice.is_siliconflow_voice(voice_name)
-            ):
-                saved_siliconflow_api_key = config.siliconflow.get("api_key", "")
-
-                siliconflow_api_key = st.text_input(
-                    tr("SiliconFlow API Key"),
-                    value=saved_siliconflow_api_key,
-                    type="password",
-                    key="siliconflow_api_key_input",
-                )
-
-                # 显示硅基流动的说明信息
-                st.info(
-                    tr("SiliconFlow TTS Settings")
-                    + ":\n"
-                    + "- "
-                    + tr("Speed: Range [0.25, 4.0], default is 1.0")
-                    + "\n"
-                    + "- "
-                    + tr("Volume: Uses Speech Volume setting, default 1.0 maps to gain 0")
-                )
-
-                config.siliconflow["api_key"] = siliconflow_api_key
-
-            # 当选择 Xiaomi MiMo TTS 时，复用 MiMo LLM provider 的 API Key。
-            # 这样用户如果同时使用 MiMo 生成文案和语音，只需要维护一份密钥。
-            if selected_tts_server == "mimo-tts" or (
-                voice_name and voice.is_mimo_voice(voice_name)
-            ):
-                saved_mimo_api_key = config.app.get("mimo_api_key", "")
-
-                mimo_api_key = st.text_input(
-                    tr("MiMo API Key"),
-                    value=saved_mimo_api_key,
-                    type="password",
-                    key="mimo_tts_api_key_input",
-                )
-
-                st.info(
-                    tr("MiMo TTS Settings")
-                    + ":\n"
-                    + "- "
-                    + tr("Uses Xiaomi MiMo V2.5 TTS preset voices")
-                    + "\n"
-                    + "- "
-                    + tr("Speed and volume are currently handled by the provider defaults")
-                )
-
-                config.app["mimo_api_key"] = mimo_api_key
-
-            # ElevenLabs API key section
-            if selected_tts_server == "elevenlabs" or (
-                voice_name and voice.is_elevenlabs_voice(voice_name)
-            ):
-                saved_elevenlabs_api_key = config.elevenlabs.get("api_key", "")
-
-                elevenlabs_api_key = st.text_input(
-                    tr("ElevenLabs API Key"),
-                    value=saved_elevenlabs_api_key,
-                    type="password",
-                    key="elevenlabs_api_key_input",
-                )
-
-                _elevenlabs_models = [
-                    "eleven_multilingual_v2",
-                    "eleven_flash_v2_5",
-                    "eleven_v3",
-                ]
-                saved_elevenlabs_model = config.elevenlabs.get(
-                    "model_id", "eleven_multilingual_v2"
-                )
-                if saved_elevenlabs_model not in _elevenlabs_models:
-                    saved_elevenlabs_model = "eleven_multilingual_v2"
-                elevenlabs_model = st.selectbox(
-                    tr("ElevenLabs Model"),
-                    options=_elevenlabs_models,
-                    index=_elevenlabs_models.index(saved_elevenlabs_model),
-                    key="elevenlabs_model_select",
-                )
-                config.elevenlabs["model_id"] = elevenlabs_model
-
-                st.info(
-                    "ElevenLabs TTS Settings:\n"
-                    "- Get your API key at https://elevenlabs.io/app/settings/api-keys\n"
-                    "- Mark voices as ★ Favorite in the ElevenLabs voice library to make them appear here"
-                )
-
-                if elevenlabs_api_key != saved_elevenlabs_api_key:
-                    for k in list(st.session_state.keys()):
-                        if k.startswith("elevenlabs_voices_"):
-                            del st.session_state[k]
-
-                config.elevenlabs["api_key"] = elevenlabs_api_key
-
-            # Chatterbox API settings section (self-hosted, OpenAI-compatible)
-            if selected_tts_server == "chatterbox" or (
-                voice_name and voice.is_chatterbox_voice(voice_name)
-            ):
-                chatterbox_base_url = st.text_input(
-                    tr("Chatterbox Base URL"),
-                    value=config.chatterbox.get("base_url") or DEFAULT_CHATTERBOX_BASE_URL,
-                    key="chatterbox_base_url_input",
-                    placeholder="http://localhost:4123/v1",
-                )
-                config.chatterbox["base_url"] = (chatterbox_base_url or "").strip()
-
-                chatterbox_api_key = st.text_input(
-                    tr("Chatterbox API Key"),
-                    value=config.chatterbox.get("api_key", ""),
-                    type="password",
-                    key="chatterbox_api_key_input",
-                )
-                config.chatterbox["api_key"] = chatterbox_api_key
-
-                chatterbox_model = st.text_input(
-                    tr("Chatterbox Model"),
-                    value=config.chatterbox.get("model_id") or DEFAULT_CHATTERBOX_MODEL,
-                    key="chatterbox_model_input",
-                )
-                config.chatterbox["model_id"] = (
-                    chatterbox_model or DEFAULT_CHATTERBOX_MODEL
-                ).strip()
-
-                _saved_chatterbox_voices = (
-                    _parse_chatterbox_voices(config.chatterbox.get("voices"))
-                    or DEFAULT_CHATTERBOX_VOICES
-                )
-                if isinstance(_saved_chatterbox_voices, list):
-                    _saved_chatterbox_voices = ", ".join(_saved_chatterbox_voices)
-                chatterbox_voices = st.text_input(
-                    tr("Chatterbox Voices"),
-                    value=str(_saved_chatterbox_voices or ""),
-                    key="chatterbox_voices_input",
-                    placeholder="default-Female, narrator-Male",
-                )
-                config.chatterbox["voices"] = _parse_chatterbox_voices(chatterbox_voices)
-
-                st.info(
-                    "Chatterbox TTS Settings (self-hosted):\n"
-                    "- Run an OpenAI-compatible Chatterbox server (e.g. "
-                    "devnen/Chatterbox-TTS-Server or travisvn/chatterbox-tts-api) and "
-                    "set Base URL to its /v1 endpoint\n"
-                    "- Voices is a comma-separated list of voice names your server "
-                    "exposes; add a -Female or -Male suffix only to label the gender "
-                    "in this dropdown\n"
-                    "- Speech Volume is not applied for Chatterbox (the OpenAI "
-                    "/audio/speech API has no volume field); use Speech Rate instead"
-                )
-
-            params.voice_volume = st.selectbox(
-                tr("Speech Volume"),
-                options=[0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0],
-                index=2,
-            )
-
-            params.voice_rate = st.selectbox(
-                tr("Speech Rate"),
-                options=[0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0],
-                index=2,
-            )
-
-            custom_audio_file_types = ["mp3", "wav", "m4a", "aac", "flac", "ogg"]
-            uploaded_audio_file = st.file_uploader(
-                tr("Custom Audio File"),
-                type=custom_audio_file_types
-                + [file_type.upper() for file_type in custom_audio_file_types],
-                accept_multiple_files=False,
-                key="custom_audio_file_uploader",
-            )
-            if uploaded_audio_file:
-                st.audio(uploaded_audio_file, format="audio/mp3")
-                st.info(
-                    tr(
-                        "Custom audio will be used directly. TTS synthesis will be skipped for this task."
-                    )
-                )
-
-            bgm_options = [
-                (tr("No Background Music"), ""),
-                (tr("Random Background Music"), "random"),
-                (tr("Random Background Music by Profile"), "profile_random"),
-                (tr("Custom Background Music"), "custom"),
-            ]
-            saved_bgm_type = config.ui.get("bgm_type", "random")
-            bgm_option_values = [option[1] for option in bgm_options]
-            saved_bgm_index = (
-                bgm_option_values.index(saved_bgm_type)
-                if saved_bgm_type in bgm_option_values
-                else 1
-            )
-            selected_index = st.selectbox(
-                tr("Background Music"),
-                index=saved_bgm_index,
-                options=range(
-                    len(bgm_options)
-                ),  # Use the index as the internal option value
-                format_func=lambda x: bgm_options[x][
-                    0
-                ],  # The label is displayed to the user
-            )
-            # Get the selected background music type
-            params.bgm_type = bgm_options[selected_index][1]
-            config.ui["bgm_type"] = params.bgm_type
-
-            # Show or hide components based on the selection
-            params.bgm_file = ""
-            params.bgm_profile = config.ui.get("bgm_profile", "")
-            if params.bgm_type == "custom":
-                custom_bgm_file = st.text_input(
-                    tr("Custom Background Music File"),
-                    value=config.ui.get("bgm_file", ""),
-                    key="custom_bgm_file_input",
-                )
-                config.ui["bgm_file"] = custom_bgm_file.strip()
-                if custom_bgm_file:
-                    # 这里不直接用 os.path.exists 判断，因为用户常见输入是
-                    # output000.mp3，这个文件名需要由服务层映射到 resource/songs
-                    # 目录后再校验。服务层会统一限制目录和文件类型，避免任意路径读取。
-                    params.bgm_file = custom_bgm_file.strip()
-            elif params.bgm_type == "profile_random":
-                profiles = bgm_service.list_profiles()
-                if profiles:
-                    saved_bgm_profile = config.ui.get("bgm_profile", "")
-                    params.bgm_profile = cockpit.render_option_cards(
-                        tr("Background Music Profile"),
-                        [(profile, profile) for profile in profiles],
-                        saved_bgm_profile if saved_bgm_profile in profiles else profiles[0],
-                        "cockpit_bgm_profile",
-                    )
-                    config.ui["bgm_profile"] = params.bgm_profile
+                if _is_terms_error(terms):
+                    st.error(tr(terms))
                 else:
-                    st.warning(tr("No background music profiles available"))
-                    config.ui["bgm_profile"] = ""
-            elif params.bgm_type != "custom":
-                params.bgm_profile = ""
-            params.bgm_volume = st.selectbox(
-                tr("Background Music Volume"),
-                options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-                index=2,
-            )
-
-    with right_panel:
-        with st.container(border=True):
-            st.write(tr("Subtitle Settings"))
-            params.subtitle_enabled = st.checkbox(tr("Enable Subtitles"), value=True)
-            font_names = get_all_fonts()
-            saved_font_name = config.ui.get("font_name", "MicrosoftYaHeiBold.ttc")
-            saved_font_name_index = 0
-            if saved_font_name in font_names:
-                saved_font_name_index = font_names.index(saved_font_name)
-            params.font_name = st.selectbox(
-                tr("Font"), font_names, index=saved_font_name_index
-            )
-            config.ui["font_name"] = params.font_name
-
-            subtitle_positions = [
-                (tr("Top"), "top"),
-                (tr("Center"), "center"),
-                (tr("Bottom"), "bottom"),
-                (tr("Custom"), "custom"),
-            ]
-            saved_subtitle_position = config.ui.get("subtitle_position", "bottom")
-            saved_position_index = 2
-            for i, (_, pos_value) in enumerate(subtitle_positions):
-                if pos_value == saved_subtitle_position:
-                    saved_position_index = i
-                    break
-            selected_index = st.selectbox(
-                tr("Position"),
-                index=saved_position_index,
-                options=range(len(subtitle_positions)),
-                format_func=lambda x: subtitle_positions[x][0],
-            )
-            params.subtitle_position = subtitle_positions[selected_index][1]
-            config.ui["subtitle_position"] = params.subtitle_position
-
-            if params.subtitle_position == "custom":
-                saved_custom_position = config.ui.get("custom_position", 70.0)
-                custom_position = st.text_input(
-                    tr("Custom Position (% from top)"),
-                    value=str(saved_custom_position),
-                    key="custom_position_input",
-                )
-                try:
-                    params.custom_position = float(custom_position)
-                    if params.custom_position < 0 or params.custom_position > 100:
-                        st.error(tr("Please enter a value between 0 and 100"))
-                    else:
-                        config.ui["custom_position"] = params.custom_position
-                except ValueError:
-                    st.error(tr("Please enter a valid number"))
-
-            font_cols = st.columns([0.3, 0.7])
-            with font_cols[0]:
-                saved_text_fore_color = config.ui.get("text_fore_color", "#FFFFFF")
-                params.text_fore_color = st.color_picker(
-                    tr("Font Color"), saved_text_fore_color
-                )
-                config.ui["text_fore_color"] = params.text_fore_color
-
-            with font_cols[1]:
-                saved_font_size = config.ui.get("font_size", 60)
-                params.font_size = st.slider(tr("Font Size"), 30, 100, saved_font_size)
-                config.ui["font_size"] = params.font_size
-
-            stroke_cols = st.columns([0.3, 0.7])
-            with stroke_cols[0]:
-                params.stroke_color = st.color_picker(tr("Stroke Color"), "#000000")
-            with stroke_cols[1]:
-                params.stroke_width = st.slider(tr("Stroke Width"), 0.0, 10.0, 1.5)
-
-            subtitle_bg_cols = st.columns([0.4, 0.6])
-            saved_subtitle_background_enabled = config.ui.get(
-                "subtitle_background_enabled", True
-            )
-            with subtitle_bg_cols[0]:
-                subtitle_background_enabled = st.checkbox(
-                    tr("Enable Subtitle Background"),
-                    value=saved_subtitle_background_enabled,
-                )
-            config.ui["subtitle_background_enabled"] = subtitle_background_enabled
-            if subtitle_background_enabled:
-                with subtitle_bg_cols[1]:
-                    saved_subtitle_background_color = config.ui.get(
-                        "subtitle_background_color", "#000000"
-                    )
-                    params.text_background_color = st.color_picker(
-                        tr("Subtitle Background Color"),
-                        saved_subtitle_background_color,
-                    )
-                    config.ui["subtitle_background_color"] = params.text_background_color
+                    st.session_state["video_terms"] = _format_generated_terms(terms)
             else:
-                params.text_background_color = False
-
-            saved_rounded_subtitle_background = config.ui.get(
-                "rounded_subtitle_background", False
-            )
-            # 背景关闭时，圆角背景没有可渲染的底色。这里禁用控件并保留原配置，
-            # 用户下次重新开启字幕背景后，可以继续使用之前保存的圆角偏好。
-            params.rounded_subtitle_background = st.checkbox(
-                tr("Rounded Subtitle Background"),
-                value=(
-                    saved_rounded_subtitle_background
-                    if subtitle_background_enabled
-                    else False
-                ),
-                help=tr("Rounded Subtitle Background Help"),
-                disabled=not subtitle_background_enabled,
-            )
-            if subtitle_background_enabled:
-                config.ui["rounded_subtitle_background"] = (
-                    params.rounded_subtitle_background
+                script = llm.generate_script(
+                    video_subject=params.video_subject,
+                    language=params.video_language,
+                    paragraph_number=params.paragraph_number,
+                    video_script_prompt=params.video_script_prompt,
+                    custom_system_prompt=params.custom_system_prompt,
                 )
-        with st.expander(tr("Click to show API Key management"), expanded=False):
-            st.subheader(tr("Manage Pexels, Pixabay and Coverr API Keys"))
-
-            col1, col2, col3 = st.tabs([
-                tr("Pexels API Keys"),
-                tr("Pixabay API Keys"),
-                tr("Coverr API Keys"),
-            ])
-
-            with col1:
-                st.subheader(tr("Pexels API Keys"))
-                if config.app["pexels_api_keys"]:
-                    st.write(tr("Current Keys:"))
-                    for key in config.app["pexels_api_keys"]:
-                        st.code(key)
-                else:
-                    st.info(tr("No Pexels API Keys currently"))
-
-                new_key = st.text_input(tr("Add Pexels API Key"), key="pexels_new_key")
-                if st.button(tr("Add Pexels API Key")):
-                    if new_key and new_key not in config.app["pexels_api_keys"]:
-                        config.app["pexels_api_keys"].append(new_key)
-                        config.save_config()
-                        st.success(tr("Pexels API Key added successfully"))
-                    elif new_key in config.app["pexels_api_keys"]:
-                        st.warning(tr("This API Key already exists"))
-                    else:
-                        st.error(tr("Please enter a valid API Key"))
-
-                if config.app["pexels_api_keys"]:
-                    delete_key = st.selectbox(
-                        tr("Select Pexels API Key to delete"), config.app["pexels_api_keys"], key="pexels_delete_key"
-                    )
-                    if st.button(tr("Delete Selected Pexels API Key")):
-                        config.app["pexels_api_keys"].remove(delete_key)
-                        config.save_config()
-                        st.success(tr("Pexels API Key deleted successfully"))
-
-            with col2:
-                st.subheader(tr("Pixabay API Keys"))
-
-                if config.app["pixabay_api_keys"]:
-                    st.write(tr("Current Keys:"))
-                    for key in config.app["pixabay_api_keys"]:
-                        st.code(key)
-                else:
-                    st.info(tr("No Pixabay API Keys currently"))
-
-                new_key = st.text_input(tr("Add Pixabay API Key"), key="pixabay_new_key")
-                if st.button(tr("Add Pixabay API Key")):
-                    if new_key and new_key not in config.app["pixabay_api_keys"]:
-                        config.app["pixabay_api_keys"].append(new_key)
-                        config.save_config()
-                        st.success(tr("Pixabay API Key added successfully"))
-                    elif new_key in config.app["pixabay_api_keys"]:
-                        st.warning(tr("This API Key already exists"))
-                    else:
-                        st.error(tr("Please enter a valid API Key"))
-
-                if config.app["pixabay_api_keys"]:
-                    delete_key = st.selectbox(
-                        tr("Select Pixabay API Key to delete"), config.app["pixabay_api_keys"], key="pixabay_delete_key"
-                    )
-                    if st.button(tr("Delete Selected Pixabay API Key")):
-                        config.app["pixabay_api_keys"].remove(delete_key)
-                        config.save_config()
-                        st.success(tr("Pixabay API Key deleted successfully"))
-
-        with col3:
-            st.subheader(tr("Coverr API Keys"))
-
-            # 与 pexels/pixabay 不同,coverr_api_keys 是 PR 新增配置项,
-            # 老用户的 config.toml 不一定包含,这里先兜底初始化为空列表,
-            # 防止下面 .append / 索引访问触发 KeyError。
-            if "coverr_api_keys" not in config.app or config.app["coverr_api_keys"] is None:
-                config.app["coverr_api_keys"] = []
-
-            if config.app["coverr_api_keys"]:
-                st.write(tr("Current Keys:"))
-                for key in config.app["coverr_api_keys"]:
-                    st.code(key)
-            else:
-                st.info(tr("No Coverr API Keys currently"))
-
-            new_key = st.text_input(tr("Add Coverr API Key"), key="coverr_new_key")
-            if st.button(tr("Add Coverr API Key")):
-                if new_key and new_key not in config.app["coverr_api_keys"]:
-                    config.app["coverr_api_keys"].append(new_key)
-                    config.save_config()
-                    st.success(tr("Coverr API Key added successfully"))
-                elif new_key in config.app["coverr_api_keys"]:
-                    st.warning(tr("This API Key already exists"))
-                else:
-                    st.error(tr("Please enter a valid API Key"))
-
-            if config.app["coverr_api_keys"]:
-                delete_key = st.selectbox(
-                    tr("Select Coverr API Key to delete"), config.app["coverr_api_keys"], key="coverr_delete_key"
+                terms = llm.generate_terms(
+                    params.video_subject,
+                    script,
+                    amount=8 if params.match_materials_to_script else 5,
+                    match_script_order=params.match_materials_to_script,
                 )
-                if st.button(tr("Delete Selected Coverr API Key")):
-                    config.app["coverr_api_keys"].remove(delete_key)
-                    config.save_config()
-                    st.success(tr("Coverr API Key deleted successfully"))
+                if "Error: " in script:
+                    st.error(tr(script))
+                elif _is_terms_error(terms):
+                    st.error(tr(terms))
+                else:
+                    st.session_state["video_script"] = script
+                    st.session_state["video_terms"] = _format_generated_terms(terms)
+                    st.session_state["cockpit_active_step"] = 1
+
+    if st.session_state.pop("cockpit_trigger_generate_keywords", False):
+        if not params.video_script:
+            st.error(tr("Please Enter the Video Subject"))
+        else:
+            with st.spinner(tr("Generating Video Keywords")):
+                terms = llm.generate_terms(
+                    params.video_subject,
+                    params.video_script,
+                    amount=8 if params.match_materials_to_script else 5,
+                    match_script_order=params.match_materials_to_script,
+                )
+                if _is_terms_error(terms):
+                    st.error(tr(terms))
+                else:
+                    st.session_state["video_terms"] = _format_generated_terms(terms)
 
     st.divider()
     render_blockers = cockpit.list_render_blockers(
@@ -1914,24 +1290,11 @@ with tab_create:
         params.voice_name,
         tr,
     )
-    preview_col, render_col = st.columns(2)
-    with preview_col:
-        include_preview_audio = st.checkbox(
-            tr("Cockpit Preview Include Audio"), value=False
-        )
-        preview_button = st.button(tr("Cockpit Preview"), use_container_width=True)
-    with render_col:
-        skip_preview = st.checkbox(
-            tr("Cockpit Skip Preview Gate"),
-            value=st.session_state.get("cockpit_skip_preview", False),
-        )
-        st.session_state["cockpit_skip_preview"] = skip_preview
-        full_button = st.button(
-            tr("Cockpit Render Full"), use_container_width=True, type="primary"
-        )
 
     if preview_button:
         config.save_config()
+        preview_task_id = str(uuid4())
+        st.session_state["last_preview_task_id"] = preview_task_id
         cockpit.run_preview(params, include_preview_audio, tr, root_dir)
         scroll_to_bottom()
 
@@ -2058,6 +1421,8 @@ with tab_create:
         cockpit.render_clip_diagnosis(result, tr)
         cockpit.render_bgm_audit_warning(task_id, params.bgm_type or "", tr)
         st.session_state["preview_ready"] = False
+        st.session_state["last_render_task_id"] = task_id
+        st.session_state["cockpit_active_step"] = 5
         try:
             if video_files:
                 player_cols = st.columns(len(video_files) * 2 + 1)

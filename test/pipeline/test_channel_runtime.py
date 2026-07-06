@@ -19,6 +19,8 @@ class TestChannelRuntime(unittest.TestCase):
         self.assertEqual(config["slug"], "japao")
         self.assertEqual(config.get("mode"), "faceless")
         self.assertTrue(config.get("title_enabled"))
+        self.assertEqual(config["collector"]["target_clips"], 25)
+        self.assertEqual(config["collector"]["min_acceptable_clips"], 20)
 
     def test_build_video_payload_forwards_match_materials(self):
         config = {
@@ -26,10 +28,13 @@ class TestChannelRuntime(unittest.TestCase):
             "paragraph_number": 2,
             "video_source": "collector",
             "match_materials_to_script": True,
+            "collector": {"target_clips": 12, "min_acceptable_clips": 10},
         }
         payload = build_video_payload(config, "Curiosidade sobre templo")
         self.assertTrue(payload["match_materials_to_script"])
         self.assertEqual(payload["video_subject"], "Curiosidade sobre templo")
+        self.assertEqual(payload["collector_target_clips"], 12)
+        self.assertEqual(payload["collector_min_acceptable_clips"], 10)
 
 
 if __name__ == "__main__":
