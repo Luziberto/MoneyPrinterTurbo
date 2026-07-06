@@ -73,19 +73,23 @@ twelvelabs_rerank_terms = false
 # twelvelabs_marengo_model = "marengo3.0"
 # twelvelabs_pegasus_model = "pegasus1.5"
 
-# Stock Video Collector (external HTTP service + shared Docker volume)
-# The Collector returns local_path values rooted at collector_remote_dir.
-# MoneyPrinterTurbo reads the same files via collector_local_dir (may differ per container).
-collector_base_url = "http://collector:8090"
+# Stock Video Collector (external HTTP service + shared download directory)
+# Recommended: Collector on the host (./run-host.sh :8001), MPT in Docker.
+# API keys for Magnific/Pexels/Pixabay live in the Collector (data/config/config.json).
+# The Collector returns clip paths under collector_remote_dir (/data/downloads/...).
+# MoneyPrinterTurbo reads the same files via collector_local_dir (bind mount in Docker).
+collector_base_url = "http://host.docker.internal:8001"
+# All on host: "http://127.0.0.1:8001"
+# Collector in same compose (future): "http://collector:8001"
 collector_remote_dir = "/data/downloads"
 collector_local_dir = "/data/downloads"
 collector_search_limit = 20
 collector_timeout = 30
-collector_job_timeout_seconds = 300
+collector_job_timeout_seconds = 600
 collector_poll_interval_seconds = 2
-collector_target_clips = 25
-collector_min_acceptable_clips = 20
+# Editorial clip targets live in pipeline/channels/{slug}/channel.json under "collector".
 collector_min_screen_duration = 1.5
+# Keep false to validate the Collector path; true falls back to Pexels/Pixabay on failure.
 collector_enable_legacy_fallback = false
 collector_fallback_source = "stock"
 
@@ -275,6 +279,36 @@ modelscope_api_key = ""
 modelscope_base_url = "https://api-inference.modelscope.cn/v1/"
 modelscope_model_name = "Qwen/Qwen3-32B"
 
+########## Anthropic (API direta — console.anthropic.com)
+# Chave em https://console.anthropic.com/settings/keys (prefixo sk-ant-...)
+anthropic_api_key = ""
+anthropic_model_name = "claude-sonnet-4-5-20250929"
+
+########## AWS Bedrock
+# Enable the target foundation model in the Bedrock console for your region first.
+# Visit https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html
+#
+# Authentication options (in order of precedence):
+#   1. bedrock_api_key — Bearer token from Bedrock console (API keys → Generate)
+#   2. bedrock_aws_* fields below (IAM Access Key + Secret)
+#   3. Environment: AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+#   4. IAM role on EC2/ECS/Lambda (leave credentials empty)
+#
+# Requires boto3 (included in requirements.txt / Docker image) for LiteLLM Bedrock calls.
+#
+# OpenAI on Bedrock Mantle (Responses API): openai.gpt-5.4, openai.gpt-5.5
+#   - Region: us-east-2 (gpt-5.5) or us-east-2 / us-west-2 (gpt-5.4)
+#   - Requires bedrock_api_key (ABSK...); IAM alone is not supported for Mantle OpenAI
+#   - There is no gpt-5.5-mini on Bedrock; use openai.gpt-5.4 as the lighter option
+#
+# Claude on Bedrock (Converse API via LiteLLM): use inference profile IDs, region us-east-1
+bedrock_region = "us-east-2"
+bedrock_model_name = "openai.gpt-5.4"
+bedrock_api_key = ""
+bedrock_aws_access_key_id = ""
+bedrock_aws_secret_access_key = ""
+bedrock_aws_session_token = ""
+
 ########## LiteLLM (AI Gateway — 100+ providers)
 # LiteLLM routes to any LLM provider via a unified interface.
 # Use this for providers not directly supported above: Anthropic (native API),
@@ -458,13 +492,14 @@ upload_post_api_key = ""
 upload_post_username = ""
 
 # Platforms to cross-post to (options: "tiktok", "instagram", "youtube")
-upload_post_platforms = ["tiktok", "instagram"]
+# Etapa 1: keep ["youtube"] only until first unlisted upload is validated.
+upload_post_platforms = ["youtube"]
 
 # Automatically cross-post videos after generation (if false, you'll need to call the API manually)
 upload_post_auto_upload = false
 
 # YouTube Shorts privacy status (options: "public", "unlisted", "private")
-upload_post_youtube_privacy_status = "public"
+upload_post_youtube_privacy_status = "unlisted"
 
 # Chatterbox TTS (self-hosted, OpenAI-compatible) ##########################
 # Chatterbox (https://github.com/resemble-ai/chatterbox, MIT) is an open-source,

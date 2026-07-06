@@ -1,8 +1,9 @@
 x-common-volumes: &common-volumes
   - ./:/MoneyPrinterTurbo
 
-volumes:
-  collector_data:
+x-collector-hosts: &collector-hosts
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 services:
   webui:
@@ -14,7 +15,14 @@ services:
       - "127.0.0.1:8501:8501"
     command: [ "streamlit", "run", "./webui/Main.py","--browser.serverAddress=127.0.0.1","--server.enableCORS=True","--browser.gatherUsageStats=False","--server.showEmailPrompt=False" ]
     volumes: *common-volumes
+    <<: *collector-hosts
     restart: always
+    # Optional AWS Bedrock credentials (when llm_provider = "bedrock"):
+    # environment:
+    #   AWS_BEARER_TOKEN_BEDROCK: ""   # Bedrock API key from console (ABSK...)
+    #   AWS_ACCESS_KEY_ID: ""
+    #   AWS_SECRET_ACCESS_KEY: ""
+    #   AWS_DEFAULT_REGION: "us-east-1"
   api:
     build:
       context: .
@@ -25,14 +33,18 @@ services:
     command: [ "python3", "main.py" ]
     volumes:
       - ./:/MoneyPrinterTurbo
-      - collector_data:/data/downloads:ro
+      - ${COLLECTOR_DOWNLOADS_DIR:-../Stock-Video-Collector/data/downloads}:/data/downloads:ro
+    <<: *collector-hosts
     restart: always
-  # Optional: external Stock Video Collector service (replace image when available)
+  # Optional: run Stock Video Collector in the same stack (port 8001).
+  # Recommended setup today: Collector on the host (./run-host.sh) because
+  # Magnific downloads need a headed browser; MPT containers reach it via
+  # host.docker.internal:8001 and the bind mount above.
   # collector:
-  #   image: <your-collector-image>
+  #   image: stock-video-collector:latest
   #   container_name: "stock-video-collector"
   #   ports:
-  #     - "127.0.0.1:8090:8090"
+  #     - "127.0.0.1:8001:8001"
   #   volumes:
-  #     - collector_data:/data/downloads
+  #     - ${COLLECTOR_DOWNLOADS_DIR:-../Stock-Video-Collector/data/downloads}:/data/downloads
   #   restart: unless-stopped
