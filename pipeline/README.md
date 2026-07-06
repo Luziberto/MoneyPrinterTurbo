@@ -19,15 +19,86 @@ Camada editorial que decide **o que gerar**. O MoneyPrinterTurbo continua sendo 
 
 **Regra:** o orchestrator **nunca** lê prompt, voz ou `video_source` do `config.toml`. Tudo editorial vem do canal; a API recebe o payload HTTP montado pelo pipeline.
 
-### Stock Video Collector (opcional)
+### Stock Video Collector
 
-Para usar clipes locais em cache:
+Fluxo oficial para clipes em cache:
 
-1. Suba o serviço **Stock Video Collector** e monte o volume compartilhado no container `api` (ver [`docker-compose.yml`](../docker-compose.yml)).
-2. Em [`config.toml`](../config.toml) (bloco `[app]`): `collector_base_url`, `collector_remote_dir`, `collector_local_dir`, `collector_fallback_source`.
-3. No canal (`channel.json`): `video_source = "collector"` quando o Collector estiver no ar.
+```
+MoneyPrinterTurbo → POST /stock/jobs → Collector → status: ready → render → MP4
+```
 
-O MPT busca por keyword via `GET /clips/search`, copia clipes para o cache da task e complementa com `stock` se a duração local for insuficiente.
+**Milestone de validação:** 1 vídeo real do canal com `video_source = "collector"`, MP4 final com clipes do Collector, sem fallback para Pexels e sem erro de path.
+
+#### Setup recomendado (Collector no host, MPT no Docker)
+
+Magnific ainda exige browser headed no host; até o fluxo rodar com confiança no Docker, use:
+
+```bash
+# Terminal 1 — Collector
+cd ../Stock-Video-Collector && ./run-host.sh   # :8001
+
+# Terminal 2 — MPT
+docker compose up -d --build
+```
+
+**`config.toml`** (bloco `[app]`):
+
+```toml
+collector_base_url = "http://host.docker.internal:8001"
+collector_remote_dir = "/data/downloads"
+collector_local_dir = "/data/downloads"
+collector_job_timeout_seconds = 600
+collector_enable_legacy_fallback = false
+```
+
+O `docker-compose.yml` monta `../Stock-Video-Collector/data/downloads` em `/data/downloads:ro` no container `api` e define `extra_hosts` para `host.docker.internal`.
+
+No canal (`channel.json`): `"video_source": "collector"`.
+
+#### Path gate (antes do primeiro vídeo real)
+
+Após um smoke job `ready`, cada clipe deve retornar path canônico:
+
+```bash
+curl -s http://localhost:8001/stock/jobs/<job_id> | jq '.clips[].path'
+# Esperado: /data/downloads/arquivo.mp4
+```
+
+O Collector normaliza paths host-absolutos para `/data/downloads/...` na resposta da API.
+
+#### Smoke test rápido (~15s, sem gastar quota Magnific)
+
+Para validar a integração sem pedir 25 clipes nem roteiro longo, use keywords que já estão no cache e poucos clipes no `channel.json`:
+
+```json
+"collector": {
+  "target_clips": 3,
+  "min_acceptable_clips": 2
+}
+```
+
+```bash
+docker exec moneyprinterturbo-api python3 cli.py \
+  --video-subject "Tokyo street smoke test" \
+  --video-script "Você já viu as luzes neon de Tokyo à noite? As ruas ficam cheias de gente. É um espetáculo único no mundo." \
+  --video-source collector \
+  --video-terms "Tokyo street" \
+  --paragraph-number 1 \
+  --no-match-materials-to-script \
+  --video-clip-duration 3 \
+  --voice-name "pt-BR-AntonioNeural-Male" \
+  --voice-rate 1.15 \
+  --bgm-type none \
+  --task-id collector-e2e-15s
+```
+
+Critério: job `ready` com `local_reused > 0` e `new_downloads = 0`, MP4 em `storage/tasks/<task_id>/final-1.mp4`.
+
+#### Fallback
+
+Com `collector_enable_legacy_fallback = false` (padrão), falha explícita se o Collector estiver indisponível — não cai silenciosamente para Pexels. O waterfall Magnific → Pexels → Pixabay roda **dentro** do Collector, não no MPT.
+
+Chaves de API (Magnific/Pexels/Pixabay) ficam no Collector (`data/config/config.json`), não no MPT.
 
 ## Estrutura
 
@@ -133,7 +204,32 @@ docker exec -it moneyprinterturbo-api python3 pipeline/orchestrator.py --channel
 | `generated` | vídeo pronto, aguarda revisão |
 | `failed` | falhou — use `--retry` |
 | `approved` | revisado, ok para publicar |
-| `published` | reservado para v2 |
+| `published` | publicado via `--publish` |
+
+## Publicação (Upload-Post)
+
+Um canal editorial (`japao`) define **onde** publicar em `publish_profiles` no `channel.json`. Credenciais Upload-Post ficam em `config.toml` (`upload_post_api_key`, `upload_post_username`).
+
+`platform_targets` é legado — o fluxo novo usa `publish_profiles`. Plataformas suportadas hoje: `youtube`, `tiktok`, `instagram`. `facebook` e `kwai` ficam desabilitados até haver integração.
+
+```bash
+# Aprovar vídeo gerado
+python pipeline/orchestrator.py --channel japao --approve 42
+
+# Publicar manualmente (usa publish_profiles do canal)
+python pipeline/orchestrator.py --channel japao --publish 42
+```
+
+Configuração inicial recomendada:
+
+```toml
+upload_post_enabled = false
+upload_post_platforms = ["youtube"]
+upload_post_auto_upload = false
+upload_post_youtube_privacy_status = "unlisted"
+```
+
+Com `upload_post_auto_upload = true`, o render também publica ao finalizar (via `app/services/publish.py`).
 
 ## Onde ficam os vídeos
 
@@ -147,6 +243,7 @@ O orchestrator envia `video_script_prompt` de `script_prompt.md` (com `{niche}` 
 | Campo | Origem |
 |---|---|
 | `niche`, `voice_name`, `font_name`, `video_source` | `channel.json` |
+| `collector.target_clips`, `collector.min_acceptable_clips` | `channel.json` |
 | `video_script_prompt` | `script_prompt.md` |
 | `paragraph_number`, legendas, `video_aspect` | `channel.json` |
 
@@ -157,7 +254,7 @@ O orchestrator envia `video_script_prompt` de `script_prompt.md` (com `{niche}` 
 | Valor | Comportamento |
 |---|---|
 | `pexels` / `pixabay` / `coverr` | Um provider de stock por geração |
-| `collector` | Cache local via Stock Video Collector |
+| `collector` | Cache local via Stock Video Collector; keywords com `{term, weight}` e limites em `channel.json` → `collector` |
 | `local` | Arquivos locais |
 
 ### TTS / voz

@@ -61,6 +61,11 @@ CHANNEL_DEFAULTS: dict[str, Any] = {
     "title_text": "",
     "title_duration": 3.0,
     "scene_structure": ["intro", "body", "cta"],
+    "collector": {
+        "target_clips": 25,
+        "min_acceptable_clips": 20,
+    },
+    "publish_profiles": [],
 }
 
 
@@ -103,6 +108,31 @@ def _normalize_channel_collections(config: dict[str, Any]) -> None:
     for key in ("schedule", "platform_targets"):
         if not isinstance(config.get(key), list):
             config[key] = []
+    publish_profiles = config.get("publish_profiles")
+    if not isinstance(publish_profiles, list):
+        config["publish_profiles"] = []
+    collector = config.get("collector")
+    if not isinstance(collector, dict):
+        config["collector"] = {
+            "target_clips": CHANNEL_DEFAULTS["collector"]["target_clips"],
+            "min_acceptable_clips": CHANNEL_DEFAULTS["collector"][
+                "min_acceptable_clips"
+            ],
+        }
+        return
+    try:
+        target = max(1, int(collector.get("target_clips", 25)))
+    except (TypeError, ValueError):
+        target = 25
+    try:
+        minimum = int(collector.get("min_acceptable_clips", min(20, target)))
+    except (TypeError, ValueError):
+        minimum = min(20, target)
+    minimum = max(1, min(minimum, target))
+    config["collector"] = {
+        "target_clips": target,
+        "min_acceptable_clips": minimum,
+    }
 
 
 def load_channel(slug: str) -> dict[str, Any]:

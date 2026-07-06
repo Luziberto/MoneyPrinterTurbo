@@ -1,7 +1,7 @@
 {
   "slug": "japao",
   "name": "Curiosidades do Japão",
-  "niche": "curiosidades sobre o Japão",
+  "niche": "",
   "video_language": "pt-BR",
   "voice_name": "pt-BR-AntonioNeural-Male",
   "font_name": "Roboto-Bold.ttf",
@@ -17,10 +17,30 @@
     "youtube",
     "tiktok"
   ],
+  "publish_profiles": [
+    {
+      "platform": "youtube",
+      "enabled": true,
+      "privacy_status": "unlisted"
+    },
+    {
+      "platform": "tiktok",
+      "enabled": false
+    },
+    {
+      "platform": "instagram",
+      "enabled": false
+    },
+    {
+      "platform": "facebook",
+      "enabled": false,
+      "note": "unsupported by Upload-Post"
+    }
+  ],
   "target_duration": "60-90",
   "target_words": "120-180",
   "paragraph_number": 3,
-  "video_source": "pexels",
+  "video_source": "collector",
   "video_aspect": "9:16",
   "video_concat_mode": "random",
   "video_transition_mode": null,
@@ -50,5 +70,9 @@
   "title_enabled": true,
   "title_text": "Curiosidades do Japão",
   "title_duration": 3.5,
-  "scene_structure": ["intro", "body", "cta"]
+  "scene_structure": ["intro", "body", "cta"],
+  "collector": {
+    "target_clips": 25,
+    "min_acceptable_clips": 20
+  }
 }

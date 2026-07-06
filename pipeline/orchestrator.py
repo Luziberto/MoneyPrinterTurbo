@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from loguru import logger
 
 # Allow running as: python pipeline/orchestrator.py
 _PIPELINE_DIR = Path(__file__).resolve().parent
@@ -109,6 +110,11 @@ def build_video_payload(
         "match_materials_to_script": bool(
             config.get("match_materials_to_script", False)
         ),
+        "collector_target_clips": (config.get("collector") or {}).get("target_clips", 25),
+        "collector_min_acceptable_clips": (config.get("collector") or {}).get(
+            "min_acceptable_clips", 20
+        ),
+        "channel_slug": config.get("slug", ""),
     }
 
 
@@ -174,6 +180,118 @@ def cmd_approve(channel: str, topic_id: int, store: TopicStore) -> int:
         return 1
     store.update_topic(channel, topic)
     print(f"Approved topic id={topic_id}: {topic.get('topic')}")
+    return 0
+
+
+def cmd_publish(channel: str, topic_id: int, store: TopicStore) -> int:
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.insert(0, str(ROOT_DIR))
+
+    from lib.publish_profiles import (  # noqa: E402
+        USE_CHANNEL_PUBLISH_PROFILES,
+        resolve_config_publish_platforms,
+        resolve_publish_platforms,
+    )
+    from app.services import publish as publish_service  # noqa: E402
+    from app.services import upload_post  # noqa: E402
+
+    topic = store.find_by_id(channel, topic_id)
+    if not topic:
+        print(f"Topic id={topic_id} not found.", file=sys.stderr)
+        return 1
+
+    config = load_channel(channel)
+    if USE_CHANNEL_PUBLISH_PROFILES:
+        platforms, skipped, youtube_privacy = resolve_publish_platforms(config)
+    else:
+        platforms, skipped, youtube_privacy = resolve_config_publish_platforms()
+    if not platforms:
+        print(
+            "No enabled publish platforms for this channel. "
+            "Check publish_profiles in channel.json.",
+            file=sys.stderr,
+        )
+        for item in skipped:
+            print(
+                f"  skipped {item.get('platform')}: {item.get('reason')}",
+                file=sys.stderr,
+            )
+        return 1
+
+    if not upload_post.upload_post_service.is_configured():
+        print(
+            "Upload-Post is not configured. Set upload_post_* in config.toml.",
+            file=sys.stderr,
+        )
+        return 1
+
+    video_path = topic.get("video_path")
+    task_id = topic.get("task_id")
+    if not video_path:
+        print(f"Topic id={topic_id} has no video_path.", file=sys.stderr)
+        return 1
+
+    resolved_path = resolve_local_path(str(video_path), str(task_id or ""))
+    if not resolved_path:
+        print(f"Video file not found for topic id={topic_id}.", file=sys.stderr)
+        return 1
+
+    settings = load_settings()
+    script = ""
+    try:
+        client = ApiClient(
+            base_url=settings.get("api_base_url", "http://127.0.0.1:8080"),
+            poll_interval=float(settings.get("poll_interval_seconds", 5)),
+            poll_timeout=float(settings.get("poll_timeout_seconds", 60)),
+        )
+        if task_id:
+            task = client.get_task(str(task_id))
+            script = str(task.get("script") or "")
+    except Exception as exc:
+        logger.warning(f"Could not fetch task script for publish: {exc}")
+
+    subject = str(topic.get("topic") or "")
+    language = str(config.get("video_language") or "pt-BR")
+
+    print(f"Publishing topic id={topic_id} to: {', '.join(platforms)}")
+    results = publish_service.cross_post_videos(
+        video_paths=[resolved_path],
+        subject=subject,
+        script=script,
+        language=language,
+        platforms=platforms,
+        youtube_privacy_status=youtube_privacy,
+    )
+
+    if not any(r.get("success") for r in results):
+        print("Publish failed.", file=sys.stderr)
+        for result in results:
+            print(f"  {result.get('error', result)}", file=sys.stderr)
+        return 1
+
+    try:
+        topics_lib.mark_published(topic, platforms=platforms, results=results)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    store.update_topic(channel, topic)
+
+    meta = {
+        "channel": channel,
+        "channel_name": config.get("name"),
+        "topic_id": topic["id"],
+        "topic": subject,
+        "task_id": task_id,
+        "video_path": resolved_path,
+        "publish_platforms": platforms,
+        "publish_results": results,
+        "skipped_publish_profiles": skipped,
+        "status": "published",
+        "published_at": topic.get("published_at"),
+    }
+    meta_path = save_run_meta(channel, meta)
+    print(f"Published topic id={topic_id}")
+    print(f"Meta: {meta_path}")
     return 0
 
 
@@ -359,6 +477,7 @@ def main() -> int:
     parser.add_argument("--channel", required=True, help="Channel slug (e.g. japao)")
     parser.add_argument("--dry-run", action="store_true", help="Show next pending topic")
     parser.add_argument("--approve", type=int, metavar="ID", help="Approve generated topic")
+    parser.add_argument("--publish", type=int, metavar="ID", help="Publish approved topic")
     parser.add_argument("--retry", type=int, metavar="ID", help="Reset failed topic to pending")
     parser.add_argument("--stats", action="store_true", help="Show topic counts by status")
     parser.add_argument(
@@ -381,6 +500,8 @@ def main() -> int:
         return cmd_stats(args.channel, store)
     if args.approve is not None:
         return cmd_approve(args.channel, args.approve, store)
+    if args.publish is not None:
+        return cmd_publish(args.channel, args.publish, store)
     if args.retry is not None:
         return cmd_retry(args.channel, args.retry, store)
     if args.dry_run:

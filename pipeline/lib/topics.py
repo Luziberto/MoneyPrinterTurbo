@@ -145,6 +145,23 @@ def mark_approved(topic: dict[str, Any]) -> None:
     topic["approved"] = True
 
 
+def mark_published(
+    topic: dict[str, Any],
+    *,
+    platforms: list[str],
+    results: list[dict[str, Any]],
+) -> None:
+    if topic.get("status") != "approved":
+        raise ValueError(
+            f"Topic {topic.get('id')} must be 'approved' to publish, "
+            f"got '{topic.get('status')}'"
+        )
+    topic["status"] = "published"
+    topic["published_at"] = utc_now_iso()
+    topic["publish_platforms"] = list(platforms)
+    topic["publish_results"] = results
+
+
 def mark_retry(topic: dict[str, Any]) -> None:
     if topic.get("status") != "failed":
         raise ValueError(

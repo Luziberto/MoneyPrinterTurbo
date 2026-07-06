@@ -11,16 +11,27 @@ from loguru import logger
 from app.config import config
 
 
+def _upload_post_setting(key: str, default=None):
+    """Read Upload-Post settings from [app], falling back to legacy [ui] keys."""
+    if key in config.app:
+        return config.app.get(key)
+    return config.ui.get(key, default)
+
+
 class UploadPostService:
     API_BASE = "https://api.upload-post.com"
 
     def __init__(self):
-        self.api_key = config.app.get("upload_post_api_key", "")
-        self.username = config.app.get("upload_post_username", "")
-        self.enabled = config.app.get("upload_post_enabled", False)
-        self.platforms = config.app.get("upload_post_platforms", ["tiktok", "instagram"])
-        self.auto_upload = config.app.get("upload_post_auto_upload", False)
-        self.youtube_privacy_status = config.app.get("upload_post_youtube_privacy_status", "public")
+        self.api_key = _upload_post_setting("upload_post_api_key", "")
+        self.username = _upload_post_setting("upload_post_username", "")
+        self.enabled = bool(_upload_post_setting("upload_post_enabled", False))
+        self.platforms = _upload_post_setting(
+            "upload_post_platforms", ["tiktok", "instagram"]
+        )
+        self.auto_upload = bool(_upload_post_setting("upload_post_auto_upload", False))
+        self.youtube_privacy_status = _upload_post_setting(
+            "upload_post_youtube_privacy_status", "public"
+        )
 
     def is_configured(self) -> bool:
         return bool(self.api_key and self.username and self.enabled)
