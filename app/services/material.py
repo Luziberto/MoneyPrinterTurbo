@@ -16,6 +16,9 @@ from app.models.schema import (
     MaterialInfo,
     VideoAspect,
     VideoConcatMode,
+    collector_keywords_to_strings,
+    normalize_collector_keywords,
+    resolve_collector_clip_limits,
 )
 from app.services import collector_client
 from app.services.clip_reranker import get_reranker_kind, rerank_collector_clips
@@ -568,36 +571,24 @@ def _config_bool(key: str, default: bool = False) -> bool:
     return bool(value)
 
 
-def _collector_target_clips() -> int:
-    try:
-        return max(1, int(config.app.get("collector_target_clips", 25)))
-    except (TypeError, ValueError):
-        return 25
-
-
-def _collector_min_acceptable_clips(target_clips: int) -> int:
-    default_value = min(20, target_clips)
-    try:
-        value = int(config.app.get("collector_min_acceptable_clips", default_value))
-    except (TypeError, ValueError):
-        value = default_value
-    return max(1, min(value, target_clips))
-
-
 def _collector_enable_legacy_fallback() -> bool:
     return _config_bool("collector_enable_legacy_fallback", False)
 
 
 def _build_collector_job_request(
-    task_id: str, search_terms: List[str]
+    task_id: str,
+    search_terms: list,
+    *,
+    target_clips: int | None = None,
+    min_acceptable_clips: int | None = None,
 ) -> CollectorJobRequest:
-    keywords = [term.strip() for term in search_terms if str(term).strip()]
-    target_clips = _collector_target_clips()
+    normalized = normalize_collector_keywords(search_terms)
+    limits = resolve_collector_clip_limits(target_clips, min_acceptable_clips)
     return CollectorJobRequest(
         client_task_id=f"mpt_{task_id}",
-        keywords=keywords,
-        target_clips=target_clips,
-        min_acceptable_clips=_collector_min_acceptable_clips(target_clips),
+        keywords=normalized.keywords,
+        target_clips=limits.target_clips,
+        min_acceptable_clips=limits.min_acceptable_clips,
     )
 
 
@@ -615,15 +606,23 @@ def _stage_selected_collector_clip(
 
 def download_videos_from_collector(
     task_id: str,
-    search_terms: List[str],
+    search_terms: list,
     video_aspect: VideoAspect = VideoAspect.portrait,
     video_contact_mode: VideoConcatMode = VideoConcatMode.random,
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
+    *,
+    collector_target_clips: int | None = None,
+    collector_min_acceptable_clips: int | None = None,
 ) -> List[CollectorSelectedClip]:
     del video_aspect, video_contact_mode, audio_duration, max_clip_duration
 
-    job_request = _build_collector_job_request(task_id, search_terms)
+    job_request = _build_collector_job_request(
+        task_id,
+        search_terms,
+        target_clips=collector_target_clips,
+        min_acceptable_clips=collector_min_acceptable_clips,
+    )
     if not job_request.keywords:
         raise collector_client.CollectorJobFailedError(
             "NO_KEYWORDS",
@@ -770,14 +769,18 @@ def _download_videos_from_remote(
 
 def download_videos_with_collector_fallback(
     task_id: str,
-    search_terms: List[str],
+    search_terms: list,
     video_aspect: VideoAspect = VideoAspect.portrait,
     video_contact_mode: VideoConcatMode = VideoConcatMode.random,
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
+    *,
+    collector_target_clips: int | None = None,
+    collector_min_acceptable_clips: int | None = None,
 ) -> List[str] | List[CollectorSelectedClip]:
     fallback_source = config.app.get("collector_fallback_source", "stock") or "stock"
     legacy_fallback_enabled = _collector_enable_legacy_fallback()
+    remote_terms = collector_keywords_to_strings(search_terms)
 
     if not collector_client.check_collector_health():
         if legacy_fallback_enabled:
@@ -786,7 +789,7 @@ def download_videos_with_collector_fallback(
             )
             return _download_videos_from_remote(
                 task_id=task_id,
-                search_terms=search_terms,
+                search_terms=remote_terms,
                 source=fallback_source,
                 video_aspect=video_aspect,
                 video_contact_mode=video_contact_mode,
@@ -806,6 +809,8 @@ def download_videos_with_collector_fallback(
             video_contact_mode=video_contact_mode,
             audio_duration=audio_duration,
             max_clip_duration=max_clip_duration,
+            collector_target_clips=collector_target_clips,
+            collector_min_acceptable_clips=collector_min_acceptable_clips,
         )
     except collector_client.CollectorError as exc:
         if not legacy_fallback_enabled:
@@ -815,7 +820,7 @@ def download_videos_with_collector_fallback(
         )
         return _download_videos_from_remote(
             task_id=task_id,
-            search_terms=search_terms,
+            search_terms=remote_terms,
             source=fallback_source,
             video_aspect=video_aspect,
             video_contact_mode=video_contact_mode,
@@ -886,13 +891,16 @@ def save_video(video_url: str, save_dir: str = "") -> str:
 
 def download_videos(
     task_id: str,
-    search_terms: List[str],
+    search_terms: list,
     source: str = "pexels",
     video_aspect: VideoAspect = VideoAspect.portrait,
     video_contact_mode: VideoConcatMode = VideoConcatMode.random,
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
     match_script_order: bool = False,
+    *,
+    collector_target_clips: int | None = None,
+    collector_min_acceptable_clips: int | None = None,
 ) -> List[str] | List[CollectorSelectedClip]:
     if source == "collector":
         return download_videos_with_collector_fallback(
@@ -906,14 +914,18 @@ def download_videos(
             ),
             audio_duration=audio_duration,
             max_clip_duration=max_clip_duration,
+            collector_target_clips=collector_target_clips,
+            collector_min_acceptable_clips=collector_min_acceptable_clips,
         )
+
+    remote_terms = collector_keywords_to_strings(search_terms)
 
     if match_script_order:
         search_videos = _get_remote_search_fn(source)
         material_directory = _resolve_material_directory(task_id)
         return _download_videos_by_script_order(
             task_id=task_id,
-            search_terms=search_terms,
+            search_terms=remote_terms,
             search_videos=search_videos,
             video_aspect=video_aspect,
             audio_duration=audio_duration,
@@ -923,7 +935,7 @@ def download_videos(
 
     return _download_videos_from_remote(
         task_id=task_id,
-        search_terms=search_terms,
+        search_terms=remote_terms,
         source=source,
         video_aspect=video_aspect,
         video_contact_mode=video_contact_mode,

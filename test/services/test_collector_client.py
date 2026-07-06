@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.config import config
-from app.models.schema import CollectorJobRequest, CollectorJobResult
+from app.models.schema import CollectorJobRequest, CollectorJobResult, CollectorKeyword
 from app.services import collector_client
 
 
@@ -24,7 +24,7 @@ class TestCollectorClient(unittest.TestCase):
         config.proxy.update(self.original_proxy_config)
 
     def test_check_collector_health_success(self):
-        config.app["collector_base_url"] = "http://collector:8090"
+        config.app["collector_base_url"] = "http://collector:8001"
         fake_response = SimpleNamespace(status_code=200, json=lambda: {"status": "ok"})
 
         with patch(
@@ -32,14 +32,14 @@ class TestCollectorClient(unittest.TestCase):
         ) as get:
             self.assertTrue(collector_client.check_collector_health())
 
-        self.assertEqual(get.call_args.args[0], "http://collector:8090/health")
+        self.assertEqual(get.call_args.args[0], "http://collector:8001/health")
 
     def test_check_collector_health_missing_base_url(self):
         config.app.pop("collector_base_url", None)
         self.assertFalse(collector_client.check_collector_health())
 
     def test_search_collector_clips_maps_list_response(self):
-        config.app["collector_base_url"] = "http://collector:8090"
+        config.app["collector_base_url"] = "http://collector:8001"
         config.app["collector_search_limit"] = 5
         fake_response = SimpleNamespace(
             status_code=200,
@@ -67,7 +67,7 @@ class TestCollectorClient(unittest.TestCase):
         self.assertIn("limit=5", get.call_args.args[0])
 
     def test_search_collector_clips_returns_empty_on_error(self):
-        config.app["collector_base_url"] = "http://collector:8090"
+        config.app["collector_base_url"] = "http://collector:8001"
         fake_response = SimpleNamespace(status_code=500, text="boom")
 
         with patch(
@@ -78,15 +78,20 @@ class TestCollectorClient(unittest.TestCase):
         self.assertEqual(results, [])
 
     def test_create_stock_job_posts_typed_payload(self):
-        config.app["collector_base_url"] = "http://collector:8090"
+        config.app["collector_base_url"] = "http://collector:8001"
         fake_response = SimpleNamespace(
             status_code=202,
-            json=lambda: {"job_id": "job-123", "status": "pending"},
+            json=lambda: {
+                "job_id": "job-123",
+                "status": "pending",
+                "selected_clips": 0,
+                "error": "",
+            },
         )
 
         payload = CollectorJobRequest(
             client_task_id="mpt_123",
-            keywords=["tokyo street"],
+            keywords=[CollectorKeyword(term="tokyo street", weight=1.0)],
             target_clips=25,
             min_acceptable_clips=20,
         )
@@ -97,8 +102,50 @@ class TestCollectorClient(unittest.TestCase):
 
         self.assertEqual(result.job_id, "job-123")
         self.assertEqual(result.status, "pending")
-        self.assertEqual(post.call_args.args[0], "http://collector:8090/stock/jobs")
+        self.assertEqual(result.selected_clips_count, 0)
+        self.assertEqual(result.selected_clips, [])
+        self.assertEqual(post.call_args.args[0], "http://collector:8001/stock/jobs")
         self.assertEqual(post.call_args.kwargs["json"]["client_task_id"], "mpt_123")
+
+    def test_create_stock_job_normalizes_collector_api_shape(self):
+        config.app["collector_base_url"] = "http://collector:8001"
+        fake_response = SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "job_id": "stock_2026_07_06_001",
+                "status": "ready",
+                "selected_clips": 1,
+                "clips": [
+                    {
+                        "clip_id": "5332",
+                        "path": "/data/downloads/tokyo.mp4",
+                        "score": 0.9,
+                        "retrieval_score": 1.0,
+                        "visual_score": 0.6,
+                        "source": "Magnific",
+                        "matched_keyword": "Tokyo street",
+                        "duration": 10.0,
+                    }
+                ],
+                "error": "",
+            },
+        )
+
+        with patch(
+            "app.services.collector_client.requests.post", return_value=fake_response
+        ):
+            result = collector_client.create_stock_job(
+                CollectorJobRequest(
+                    client_task_id="mpt_1",
+                    keywords=[CollectorKeyword(term="Tokyo street", weight=1.0)],
+                    target_clips=1,
+                    min_acceptable_clips=1,
+                )
+            )
+
+        self.assertEqual(result.selected_clips_count, 1)
+        self.assertEqual(len(result.selected_clips), 1)
+        self.assertEqual(result.selected_clips[0].path, "/data/downloads/tokyo.mp4")
 
     def test_wait_for_stock_job_returns_ready_result(self):
         pending = CollectorJobResult(job_id="job-123", status="pending")

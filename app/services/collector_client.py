@@ -98,6 +98,47 @@ def _normalize_error(
     return CollectorJobError(code=default_code, message=default_message)
 
 
+def _normalize_stock_job_body(body: dict) -> dict:
+    """Map Stock Video Collector API fields to CollectorJobResult."""
+    normalized = dict(body)
+    raw_error = normalized.get("error")
+    if isinstance(raw_error, str):
+        normalized["error"] = (
+            None
+            if not raw_error.strip()
+            else CollectorJobError(code="COLLECTOR_JOB_FAILED", message=raw_error)
+        )
+
+    clip_items = normalized.pop("clips", None)
+    selected = normalized.get("selected_clips")
+    if isinstance(selected, int):
+        normalized["selected_clips_count"] = selected
+        normalized["selected_clips"] = clip_items if isinstance(clip_items, list) else []
+    elif isinstance(selected, list):
+        normalized["selected_clips_count"] = len(selected)
+    elif clip_items:
+        normalized["selected_clips"] = clip_items
+        normalized["selected_clips_count"] = len(clip_items)
+
+    clips = normalized.get("selected_clips") or []
+    if isinstance(clips, list):
+        sanitized = []
+        for clip in clips:
+            if not isinstance(clip, dict):
+                continue
+            item = dict(clip)
+            if item.get("duration") is None:
+                item["duration"] = 0.0
+            if item.get("width") is None:
+                item["width"] = 0
+            if item.get("height") is None:
+                item["height"] = 0
+            sanitized.append(item)
+        normalized["selected_clips"] = sanitized
+
+    return normalized
+
+
 def _collector_headers() -> dict[str, str]:
     return {"Content-Type": "application/json"}
 
@@ -202,7 +243,7 @@ def create_stock_job(payload: CollectorJobRequest | dict) -> CollectorJobResult:
             "COLLECTOR_INVALID_RESPONSE",
             "Collector returned invalid stock job response",
         )
-    return CollectorJobResult(**body)
+    return CollectorJobResult(**_normalize_stock_job_body(body))
 
 
 def get_stock_job(job_id: str) -> CollectorJobResult:
@@ -212,7 +253,7 @@ def get_stock_job(job_id: str) -> CollectorJobResult:
             "COLLECTOR_INVALID_RESPONSE",
             "Collector returned invalid stock job status response",
         )
-    return CollectorJobResult(**body)
+    return CollectorJobResult(**_normalize_stock_job_body(body))
 
 
 def wait_for_stock_job(
@@ -329,3 +370,33 @@ def search_collector_clips(query: str, limit: int | None = None) -> List[dict]:
     except Exception as exc:
         logger.error(f"collector search failed: {exc}")
         return []
+
+
+def fetch_collector_dashboard() -> dict:
+    """Best-effort collector stats for cockpit UI (optional /stats endpoint)."""
+    dashboard: dict = {
+        "library_count": None,
+        "library_size_tb": None,
+        "quota_remaining": None,
+        "worker_status": None,
+    }
+    base_url = get_collector_base_url()
+    if not base_url:
+        return dashboard
+
+    try:
+        body = _request_collector("GET", "/stats")
+        if isinstance(body, dict):
+            dashboard["library_count"] = body.get("library_count") or body.get("total_clips")
+            dashboard["library_size_tb"] = body.get("library_size_tb") or body.get("total_tb")
+            dashboard["quota_remaining"] = body.get("quota_remaining") or body.get("quota")
+            dashboard["worker_status"] = body.get("worker_status") or body.get("worker")
+    except CollectorError:
+        pass
+    except Exception as exc:
+        logger.debug(f"collector dashboard unavailable: {exc}")
+
+    if dashboard["worker_status"] is None and check_collector_health():
+        dashboard["worker_status"] = "Idle"
+
+    return dashboard

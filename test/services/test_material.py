@@ -956,8 +956,6 @@ class TestCollectorProvider(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "COLLECTOR_UNAVAILABLE")
 
     def test_download_videos_from_collector_creates_job_and_stages_selected_clips(self):
-        config.app["collector_target_clips"] = 25
-        config.app["collector_min_acceptable_clips"] = 1
         config.app.pop("material_directory", None)
         ready_job = CollectorJobResult(
             job_id="job-123",
@@ -994,14 +992,18 @@ class TestCollectorProvider(unittest.TestCase):
         ):
             result = material.download_videos_from_collector(
                 task_id="t-job",
-                search_terms=["taiyaki"],
+                search_terms=[{"term": "taiyaki", "weight": 1.0}],
                 audio_duration=60,
                 max_clip_duration=5,
+                collector_target_clips=25,
+                collector_min_acceptable_clips=1,
             )
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].path, "/tmp/staged-clip.mp4")
         self.assertEqual(create_job.call_args.args[0].client_task_id, "mpt_t-job")
+        self.assertEqual(create_job.call_args.args[0].keywords[0].term, "taiyaki")
+        self.assertEqual(create_job.call_args.args[0].target_clips, 25)
 
 
 if __name__ == "__main__":
