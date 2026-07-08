@@ -354,6 +354,7 @@ class WorkspacePreviewState(BaseModel):
     ready: bool = False
     last_preview_at: Optional[str] = None
     last_preview_task_id: Optional[str] = None
+    last_preview_audio_file: Optional[str] = None
 
 
 class WorkspaceRenderState(BaseModel):
