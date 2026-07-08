@@ -275,6 +275,157 @@ class VideoParams(BaseModel):
     publish_platforms: Optional[List[str]] = None
 
 
+# ---------------------------------------------------------------------------
+# Cockpit workspace — server-side draft state for the Vue cockpit, replacing
+# Streamlit's st.session_state. One Workspace per channel_slug, persisted by
+# app/services/workspace_store.py. See pipeline/README.md-adjacent
+# webui-vue migration plan for the full field-by-field mapping from
+# webui/cockpit.py's session_state keys.
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceScript(BaseModel):
+    video_subject: str = ""
+    video_script: str = ""
+    script_mode: Literal["auto", "verbatim", "polish"] = "auto"
+    video_language: str = ""
+    paragraph_number: int = 1
+    video_script_prompt: str = ""
+    use_custom_system_prompt: bool = False
+    custom_system_prompt: str = ""
+    match_materials_to_script: bool = False
+
+
+class WorkspaceKeywords(BaseModel):
+    terms: List[CollectorKeyword] = Field(default_factory=list)
+    has_explicit_weights: bool = False
+
+
+class WorkspaceMedia(BaseModel):
+    video_source: str = "pexels"
+    video_aspect: str = VideoAspect.portrait.value
+    video_concat_mode: str = VideoConcatMode.random.value
+    video_transition_mode: Optional[str] = None
+    video_clip_duration: int = 3
+    video_count: int = 1
+    collector_target_clips: Optional[int] = None
+    collector_min_acceptable_clips: Optional[int] = None
+    last_collector_job: Optional[dict] = None
+    video_materials: Optional[List[MaterialInfo]] = None
+    video_clips: Optional[List[CollectorSelectedClip]] = None
+
+
+class WorkspaceVoice(BaseModel):
+    voice_name: str = ""
+    voice_volume: float = 1.0
+    voice_rate: float = 1.0
+    tts_server: str = "azure-tts-v1"
+    custom_audio_file: Optional[str] = None
+
+
+class WorkspaceBgm(BaseModel):
+    bgm_type: str = "random"
+    bgm_profile: str = ""
+    bgm_file: str = ""
+    bgm_volume: float = 0.2
+
+
+class WorkspaceSubtitle(BaseModel):
+    subtitle_enabled: bool = True
+    font_name: str = "Roboto-Bold.ttf"
+    font_size: int = 55
+    subtitle_position: str = "bottom"
+    custom_position: float = 70.0
+    text_fore_color: str = "#FFFFFF"
+    stroke_color: str = "#000000"
+    stroke_width: float = 2.5
+    subtitle_background_enabled: bool = True
+    subtitle_background_color: str = "#000000"
+    rounded_subtitle_background: bool = False
+
+
+class WorkspaceTitleOverlay(BaseModel):
+    title_enabled: bool = False
+    title_text: str = ""
+    title_duration: float = 3.0
+
+
+class WorkspacePreviewState(BaseModel):
+    ready: bool = False
+    last_preview_at: Optional[str] = None
+    last_preview_task_id: Optional[str] = None
+
+
+class WorkspaceRenderState(BaseModel):
+    last_render_task_id: Optional[str] = None
+    skip_preview: bool = False
+
+
+class WorkspacePublishState(BaseModel):
+    mode: Literal["manual", "auto", "skip"] = "manual"
+    platforms: List[str] = Field(default_factory=list)
+    auto_upload: bool = False
+    youtube_privacy_status: str = "unlisted"
+    last_results: Optional[List[dict]] = None
+    done: bool = False
+
+
+class Workspace(BaseModel):
+    channel_slug: Optional[str] = None
+    active_step: int = Field(default=0, ge=0, le=5)
+    updated_at: Optional[str] = None
+
+    script: WorkspaceScript = Field(default_factory=WorkspaceScript)
+    keywords: WorkspaceKeywords = Field(default_factory=WorkspaceKeywords)
+    media: WorkspaceMedia = Field(default_factory=WorkspaceMedia)
+    voice: WorkspaceVoice = Field(default_factory=WorkspaceVoice)
+    bgm: WorkspaceBgm = Field(default_factory=WorkspaceBgm)
+    subtitle: WorkspaceSubtitle = Field(default_factory=WorkspaceSubtitle)
+    title_overlay: WorkspaceTitleOverlay = Field(default_factory=WorkspaceTitleOverlay)
+
+    overrides: List[str] = Field(default_factory=list)
+
+    preview: WorkspacePreviewState = Field(default_factory=WorkspacePreviewState)
+    render: WorkspaceRenderState = Field(default_factory=WorkspaceRenderState)
+    publish: WorkspacePublishState = Field(default_factory=WorkspacePublishState)
+
+
+class WorkspacePatch(BaseModel):
+    """Partial update body for PATCH /cockpit/workspace.
+
+    Each field is a partial dict merged into the matching Workspace group
+    (deep merge, not replace) by app/services/workspace_store.py. Kept loosely
+    typed (dict, not the group model) so the client can send only the keys
+    that changed without re-sending an entire group.
+    """
+
+    active_step: Optional[int] = Field(default=None, ge=0, le=5)
+    script: Optional[dict] = None
+    keywords: Optional[dict] = None
+    media: Optional[dict] = None
+    voice: Optional[dict] = None
+    bgm: Optional[dict] = None
+    subtitle: Optional[dict] = None
+    title_overlay: Optional[dict] = None
+    preview: Optional[dict] = None
+    render: Optional[dict] = None
+    publish: Optional[dict] = None
+
+
+class ChannelSummary(BaseModel):
+    slug: str
+    name: str
+    niche: str = ""
+    mode: str = "faceless"
+    video_source: str = "pexels"
+
+
+class ChannelConfigResponse(BaseModel):
+    slug: str
+    config: dict
+    runtime: dict
+
+
 class SubtitleRequest(BaseModel):
     video_script: str
     video_language: Optional[str] = ""
