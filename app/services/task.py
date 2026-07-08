@@ -472,6 +472,40 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
     return kwargs
 
 
+def start_with_lock(task_id, params: VideoParams, stop_at: str = "video"):
+    """Single-flight-locked entry point for full renders (stop_at == "video").
+
+    Both pipeline's POST /videos and the cockpit's POST /cockpit/render go
+    through this (see app/controllers/v1/video.py::create_task) so a manual
+    cockpit render and a pipeline batch job can never run concurrently.
+    `/subtitle` and `/audio` still call start() directly -- they're cheap and
+    were never covered by this lock in the Streamlit cockpit either.
+
+    Registered by name (not passed as a closure) so RedisTaskManager can
+    serialize it into its queue via FUNC_MAP; see
+    app/controllers/manager/redis_manager.py.
+    """
+    if stop_at != "video":
+        return start(task_id=task_id, params=params, stop_at=stop_at)
+
+    from app.services.runtime_limits import (
+        GenerationAlreadyRunningError,
+        single_flight_generation_lock,
+    )
+
+    try:
+        with single_flight_generation_lock(task_id):
+            return start(task_id=task_id, params=params, stop_at=stop_at)
+    except GenerationAlreadyRunningError as exc:
+        logger.warning(f"task {task_id} rejected: generation already running ({exc})")
+        sm.state.update_task(
+            task_id,
+            state=const.TASK_STATE_FAILED,
+            error=f"Another generation is already running (task {exc})",
+        )
+        return None
+
+
 if __name__ == "__main__":
     task_id = "task_id"
     params = VideoParams(

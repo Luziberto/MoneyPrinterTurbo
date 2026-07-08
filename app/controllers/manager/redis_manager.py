@@ -9,6 +9,7 @@ from app.services import task as tm
 
 FUNC_MAP = {
     "start": tm.start,
+    "start_with_lock": tm.start_with_lock,
     # 'start_test': tm.start_test
 }
 

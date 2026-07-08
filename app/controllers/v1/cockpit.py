@@ -208,3 +208,52 @@ def clear_generation_lock(request: Request, body: ClearLockRequest):
 
     cleared = runtime_limits.clear_stale_generation_lock(force=body.force)
     return utils.get_response(200, {"cleared": cleared})
+
+
+class RenderRequest(BaseModel):
+    force: bool = False
+
+
+@router.post(
+    "/cockpit/render",
+    response_model=None,
+    summary="Assemble VideoParams from the workspace and submit a full render",
+)
+def render_from_workspace(
+    request: Request,
+    body: RenderRequest,
+    channel_slug: str | None = Query(default=None),
+):
+    from app.controllers.v1 import video
+    from app.models.schema import TaskVideoRequest
+    from app.services.workspace_assembly import assemble_video_params
+
+    request_id = base.get_task_id(request)
+    workspace = workspace_store.load_workspace(channel_slug)
+    channel_runtime = _load_channel_runtime_or_404(request, channel_slug) if channel_slug else None
+
+    if not body.force:
+        blockers = provider_readiness.list_render_blockers(
+            workspace.media.video_source, workspace.voice.voice_name
+        )
+        if blockers:
+            names = ", ".join(b["provider"] for b in blockers)
+            raise HttpException(
+                task_id=request_id,
+                status_code=400,
+                message=f"{request_id}: render blocked: {names}",
+            )
+
+    params = assemble_video_params(workspace, channel_runtime)
+    task_request = TaskVideoRequest(**params.model_dump())
+    # Delegates to the same create_task/task_manager machinery pipeline's
+    # POST /videos uses -- start_with_lock (see app/services/task.py) is what
+    # actually makes the two share the single-flight generation lock.
+    response = video.create_task(request, task_request, stop_at="video")
+
+    task_id = response.get("data", {}).get("task_id")
+    if task_id:
+        workspace.render.last_render_task_id = task_id
+        workspace_store.save_workspace(workspace)
+
+    return response
