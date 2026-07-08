@@ -28,3 +28,6 @@ logs/
 
 storage/
 config.toml
+
+webui-vue/node_modules/
+webui-vue/dist/

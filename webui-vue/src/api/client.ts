@@ -69,6 +69,8 @@ export const api = {
     request<T>('POST', path, { json: json ?? {}, params }),
   patch: <T>(path: string, json?: unknown, params?: Record<string, string | number | boolean | undefined>) =>
     request<T>('PATCH', path, { json: json ?? {}, params }),
+  put: <T>(path: string, json?: unknown, params?: Record<string, string | number | boolean | undefined>) =>
+    request<T>('PUT', path, { json: json ?? {}, params }),
   delete: <T>(path: string, params?: Record<string, string | number | boolean | undefined>) =>
     request<T>('DELETE', path, { params }),
 }

@@ -47,3 +47,7 @@ pipeline/data/
 pipeline/assets/music/**/*.mp3
 pipeline/assets/music/**/*.wav
 pipeline/assets/music/**/*.flac
+
+# webui-vue build output, copied here by scripts/build_webui.sh -- see
+# webui-vue/README.md. Not committed; built at image-build / deploy time.
+/resource/public/*

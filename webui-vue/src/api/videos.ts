@@ -25,5 +25,11 @@ export const videosApi = {
 
   getTask: (taskId: string) => api.get<TaskState>(`/api/v1/tasks/${taskId}`),
 
+  listTasks: (page = 1, pageSize = 20) =>
+    api.get<{ tasks: TaskState[]; total: number; page: number; page_size: number }>('/api/v1/tasks', {
+      page,
+      page_size: pageSize,
+    }),
+
   deleteTask: (taskId: string) => api.delete<void>(`/api/v1/tasks/${taskId}`),
 }

@@ -1,3 +1,11 @@
+# ---- Build the Vue cockpit (webui-vue/) ----
+FROM node:20-slim AS webui-vue-build
+WORKDIR /webui-vue
+COPY webui-vue/package.json webui-vue/package-lock.json ./
+RUN npm ci
+COPY webui-vue/ ./
+RUN npm run build
+
 # Use an official Python runtime as a parent image
 FROM python:3.11-slim-bullseye
 
@@ -70,6 +78,10 @@ RUN if [ "$PIP_USE_OFFICIAL" = "1" ]; then \
 
 # Now copy the rest of the codebase into the image
 COPY . .
+
+# Overlay the built Vue cockpit -- app/asgi.py mounts resource/public/ at "/".
+# Replaces the committed placeholder page copied in by COPY . . above.
+COPY --from=webui-vue-build /webui-vue/dist/. ./resource/public/
 
 # Expose the port the app runs on
 EXPOSE 8501

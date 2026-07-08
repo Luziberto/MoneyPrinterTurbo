@@ -10,7 +10,7 @@ Resources:
 from fastapi import APIRouter
 
 from app.controllers import ping
-from app.controllers.v1 import channels, cockpit, collector, llm, publish, video
+from app.controllers.v1 import channels, cockpit, collector, config, llm, publish, video, voices
 
 root_api_router = APIRouter()
 root_api_router.include_router(ping.router)
@@ -21,3 +21,5 @@ root_api_router.include_router(cockpit.router)
 root_api_router.include_router(channels.router)
 root_api_router.include_router(collector.router)
 root_api_router.include_router(publish.router)
+root_api_router.include_router(config.router)
+root_api_router.include_router(voices.router)
