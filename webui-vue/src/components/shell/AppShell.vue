@@ -1,6 +1,19 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import TabNav from './TabNav.vue'
 import ChannelSwitcher from './ChannelSwitcher.vue'
+import { useUiStore } from '../../stores/ui'
+import { KNOWN_LOCALES, type LocaleCode } from '../../api/i18n'
+
+const uiStore = useUiStore()
+
+onMounted(() => {
+  void uiStore.setLocale(uiStore.locale)
+})
+
+function onLocaleChange(event: Event) {
+  void uiStore.setLocale((event.target as HTMLSelectElement).value as LocaleCode)
+}
 </script>
 
 <template>
@@ -12,6 +25,9 @@ import ChannelSwitcher from './ChannelSwitcher.vue'
       </div>
       <TabNav />
       <ChannelSwitcher />
+      <select class="locale-switcher" :value="uiStore.locale" @change="onLocaleChange">
+        <option v-for="locale in KNOWN_LOCALES" :key="locale" :value="locale">{{ locale }}</option>
+      </select>
     </header>
     <main class="app-shell__body">
       <RouterView />
@@ -50,6 +66,17 @@ import ChannelSwitcher from './ChannelSwitcher.vue'
 .app-shell__subtitle {
   font-size: 0.8rem;
   color: var(--cockpit-text-muted);
+}
+
+.locale-switcher {
+  margin-left: auto;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--cockpit-border);
+  background: var(--cockpit-surface);
+  color: var(--cockpit-text);
+  font-size: 0.8rem;
+  text-transform: uppercase;
 }
 
 .app-shell__body {

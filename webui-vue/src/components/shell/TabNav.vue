@@ -1,10 +1,17 @@
 <script setup lang="ts">
-const tabs = [
-  { to: '/criar/script', label: 'Criar' },
-  { to: '/canais', label: 'Canais' },
-  { to: '/tarefas', label: 'Tarefas' },
-  { to: '/config', label: 'Config' },
-]
+import { computed } from 'vue'
+import { useUiStore } from '../../stores/ui'
+
+const uiStore = useUiStore()
+
+// Keys match webui/i18n/*.json exactly (see webui/Main.py's st.tabs call),
+// so this is a mechanical lookup, not new translation content.
+const tabs = computed(() => [
+  { to: '/criar/script', key: 'Cockpit Tab Create' },
+  { to: '/canais', key: 'Cockpit Tab Channels' },
+  { to: '/tarefas', key: 'Cockpit Tab Tasks' },
+  { to: '/config', key: 'Cockpit Tab Config' },
+])
 </script>
 
 <template>
@@ -16,7 +23,7 @@ const tabs = [
       class="tab-nav__item"
       :class="{ 'tab-nav__item--active': $route.path.startsWith(tab.to.split('/').slice(0, 2).join('/')) }"
     >
-      {{ tab.label }}
+      {{ uiStore.tr(tab.key) }}
     </RouterLink>
   </nav>
 </template>
