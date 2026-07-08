@@ -1,0 +1,84 @@
+/* Palette matches webui/cockpit.py's COCKPIT_CSS (slate + indigo), so the
+   Vue cockpit reads as a continuation of the same tool, not a redesign. */
+:root {
+  --cockpit-bg: #f8fafc;
+  --cockpit-surface: #ffffff;
+  --cockpit-surface-hover: #f1f5f9;
+  --cockpit-border: #e2e8f0;
+  --cockpit-text: #0f172a;
+  --cockpit-text-muted: #64748b;
+  --cockpit-accent: #6366f1;
+  --cockpit-accent-contrast: #f8fafc;
+  --cockpit-success: #16a34a;
+  --cockpit-danger: #dc2626;
+  --cockpit-warning: #d97706;
+
+  color-scheme: light dark;
+  font: 15px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cockpit-bg: #0f172a;
+    --cockpit-surface: #1e293b;
+    --cockpit-surface-hover: #334155;
+    --cockpit-border: rgba(148, 163, 184, 0.22);
+    --cockpit-text: #f8fafc;
+    --cockpit-text-muted: #94a3b8;
+    --cockpit-accent: #818cf8;
+    --cockpit-accent-contrast: #0f172a;
+    --cockpit-success: #4ade80;
+    --cockpit-danger: #f87171;
+    --cockpit-warning: #fbbf24;
+  }
+}
+
+:root[data-theme='dark'] {
+  --cockpit-bg: #0f172a;
+  --cockpit-surface: #1e293b;
+  --cockpit-surface-hover: #334155;
+  --cockpit-border: rgba(148, 163, 184, 0.22);
+  --cockpit-text: #f8fafc;
+  --cockpit-text-muted: #94a3b8;
+  --cockpit-accent: #818cf8;
+  --cockpit-accent-contrast: #0f172a;
+  --cockpit-success: #4ade80;
+  --cockpit-danger: #f87171;
+  --cockpit-warning: #fbbf24;
+}
+
+:root[data-theme='light'] {
+  --cockpit-bg: #f8fafc;
+  --cockpit-surface: #ffffff;
+  --cockpit-surface-hover: #f1f5f9;
+  --cockpit-border: #e2e8f0;
+  --cockpit-text: #0f172a;
+  --cockpit-text-muted: #64748b;
+  --cockpit-accent: #6366f1;
+  --cockpit-accent-contrast: #f8fafc;
+  --cockpit-success: #16a34a;
+  --cockpit-danger: #dc2626;
+  --cockpit-warning: #d97706;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--cockpit-text);
+  background: var(--cockpit-bg);
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
