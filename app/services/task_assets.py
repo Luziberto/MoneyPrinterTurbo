@@ -10,9 +10,12 @@ change instead of an API-wide one.
 from __future__ import annotations
 
 import glob
+import json
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
+from loguru import logger
 
 from app.config import config
 from app.utils import utils
@@ -70,3 +73,22 @@ def list_assets(task_id: str) -> list[TaskAsset]:
         if asset:
             assets.append(asset)
     return assets
+
+
+def read_script_json(task_id: str) -> Optional[dict[str, Any]]:
+    """The {script, search_terms, params} blob written by task.py::save_script_data().
+
+    Used by the Video Library API for lazy script/keyword display and for
+    re-render (params round-trip). Returns None if the task never reached
+    the script-saving stage (e.g. it failed before terms/audio) or the file
+    is unreadable.
+    """
+    script_path = os.path.join(utils.task_dir(task_id), "script.json")
+    if not os.path.isfile(script_path):
+        return None
+    try:
+        with open(script_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning(f"failed to read script.json for {task_id}: {exc}")
+        return None
