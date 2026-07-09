@@ -32,6 +32,18 @@ def run_preview(
 ) -> Workspace:
     from app.services import llm, voice
     from app.services.cockpit_keywords import normalized_to_workspace_keywords
+    from app.services.cockpit_state import build_channel_runtime
+    from app.utils.target_duration import paragraph_number_from_target_duration
+
+    channel_runtime = (
+        build_channel_runtime(workspace.channel_slug) if workspace.channel_slug else {}
+    )
+    target_duration = str(channel_runtime.get("target_duration") or "").strip()
+    paragraph_number = (
+        paragraph_number_from_target_duration(target_duration)
+        if target_duration
+        else int(workspace.script.paragraph_number or 1)
+    )
 
     if not workspace.script.video_subject and not workspace.script.video_script:
         raise PreviewError("Video Script and Subject Cannot Both Be Empty")
@@ -41,23 +53,28 @@ def run_preview(
         script = llm.generate_script(
             video_subject=workspace.script.video_subject,
             language=workspace.script.video_language,
-            paragraph_number=workspace.script.paragraph_number,
+            paragraph_number=paragraph_number,
             video_script_prompt=workspace.script.video_script_prompt,
             custom_system_prompt=(
                 workspace.script.custom_system_prompt
                 if workspace.script.use_custom_system_prompt
                 else ""
             ),
+            target_duration=target_duration,
         )
     if not script or script.startswith("Error:"):
         raise PreviewError(script or "Video Generation Failed")
 
-    amount = llm.default_terms_amount(workspace.script.match_materials_to_script)
+    amount = llm.default_terms_amount(
+        workspace.script.match_materials_to_script,
+        paragraph_number,
+    )
     terms = llm.generate_terms(
         video_subject=workspace.script.video_subject,
         video_script=script,
         amount=amount,
         match_script_order=workspace.script.match_materials_to_script,
+        paragraph_number=paragraph_number,
     )
     if _is_terms_error(terms):
         raise PreviewError(str(terms))

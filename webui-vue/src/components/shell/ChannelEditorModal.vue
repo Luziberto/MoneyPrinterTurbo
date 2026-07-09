@@ -7,6 +7,8 @@ import {
   type ChannelEditForm,
 } from '../../composables/useChannelCrud'
 import { btnPrimaryClass, inputClass, labelClass, selectClass } from '../../lib/cockpit-ui'
+import { durationSecondOptions } from '../../lib/target-duration'
+import { videoLanguageOptions } from '../../lib/video-languages'
 import { useChannelsStore } from '../../stores/channels'
 import { useUiStore } from '../../stores/ui'
 import { X } from '../../lib/cockpit-icons'
@@ -37,6 +39,13 @@ const {
 
 const newChannel = ref({ slug: '', name: '', niche: '' })
 const editForm = ref<ChannelEditForm>(emptyEditForm())
+const durationOptions = durationSecondOptions()
+
+const maxDurationOptions = computed(() =>
+  durationOptions.filter((seconds) => seconds >= editForm.value.target_duration_min),
+)
+
+const languageOptions = computed(() => videoLanguageOptions(editForm.value.video_language))
 
 const channel = computed(() =>
   props.slug ? channelsStore.channels.find((c) => c.slug === props.slug) ?? null : null,
@@ -59,6 +68,15 @@ watch(
     }
     if (slug) {
       editForm.value = await loadEditForm(slug)
+    }
+  },
+)
+
+watch(
+  () => editForm.value.target_duration_min,
+  (min) => {
+    if (editForm.value.target_duration_max < min) {
+      editForm.value.target_duration_max = min
     }
   },
 )
@@ -208,13 +226,33 @@ function avatarFor(ch: ChannelSummary) {
                 <option value="1:1">1:1</option>
               </select>
             </label>
-            <label class="flex flex-col gap-1.5">
+            <div class="flex flex-col gap-1.5 sm:col-span-2">
               <span :class="labelClass">{{ uiStore.tr('Cockpit Target Duration') }}</span>
-              <input v-model="editForm.target_duration" :class="inputClass" />
-            </label>
+              <div class="flex items-center gap-2">
+                <select v-model.number="editForm.target_duration_min" :class="[selectClass, 'min-w-0 flex-1']">
+                  <option v-for="seconds in durationOptions" :key="`min-${seconds}`" :value="seconds">
+                    {{ seconds }}s
+                  </option>
+                </select>
+                <span class="cockpit-muted shrink-0 text-sm">–</span>
+                <select v-model.number="editForm.target_duration_max" :class="[selectClass, 'min-w-0 flex-1']">
+                  <option v-for="seconds in maxDurationOptions" :key="`max-${seconds}`" :value="seconds">
+                    {{ seconds }}s
+                  </option>
+                </select>
+              </div>
+            </div>
             <label class="flex flex-col gap-1.5">
               <span :class="labelClass">{{ uiStore.tr('Cockpit Channel Language') }}</span>
-              <input v-model="editForm.video_language" :class="inputClass" />
+              <select v-model="editForm.video_language" :class="selectClass">
+                <option
+                  v-for="option in languageOptions"
+                  :key="option.value || 'auto'"
+                  :value="option.value"
+                >
+                  {{ option.value === '' ? uiStore.tr('Auto Detect') : option.label }}
+                </option>
+              </select>
             </label>
           </div>
 

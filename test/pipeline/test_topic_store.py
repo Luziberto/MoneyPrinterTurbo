@@ -116,6 +116,45 @@ class TopicStoreTestCase(unittest.TestCase):
             self.assertIn("topic_id", columns)
             self.assertNotIn("id", columns)
 
+    def test_count_generated_today_ignores_pending_and_other_days(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        today = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0).isoformat()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "pipeline.db"
+            store = TopicStore(db_path)
+
+            store.insert_topics(
+                "japao",
+                [
+                    {
+                        **_topic_record(1, "Hoje gerado", "hash-1"),
+                        "status": "generated",
+                        "generated_at": today,
+                    },
+                    {
+                        **_topic_record(2, "Hoje aprovado", "hash-2"),
+                        "status": "approved",
+                        "generated_at": today,
+                    },
+                    {
+                        **_topic_record(3, "Ontem", "hash-3"),
+                        "status": "generated",
+                        "generated_at": yesterday,
+                    },
+                    {
+                        **_topic_record(4, "Pendente", "hash-4"),
+                        "status": "pending",
+                        "generated_at": today,
+                    },
+                ],
+            )
+
+            self.assertEqual(store.count_generated_today("japao"), 2)
+            self.assertEqual(store.count_generated_today("tech"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,22 +75,22 @@ watch(() => channelsStore.activeSlug, () => {
           :key="topic.uid"
           class="rounded-lg border border-slate-600/20 bg-cockpit-surface/50 p-2.5 light:border-slate-200 light:bg-slate-50"
         >
-          <div class="mb-1.5 flex items-start justify-between gap-2">
-            <span
-              class="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[0.62rem] font-bold tracking-wide text-amber-300 uppercase light:text-amber-700"
+          <div class="mb-1.5 flex items-center justify-between gap-2">
+            <span class="cockpit-muted text-[0.65rem] font-semibold">#{{ topic.id }}</span>
+            <button
+              type="button"
+              :class="[btnPrimaryClass, 'shrink-0 px-2.5 py-1 text-xs']"
+              @click="useTopic(topic)"
             >
-              {{ topic.category }}
-            </span>
-            <span class="cockpit-muted text-[0.62rem]">#{{ topic.id }}</span>
+              {{ uiStore.tr('Cockpit Use Topic') }}
+            </button>
           </div>
-          <p class="cockpit-title mb-2 line-clamp-2 text-sm leading-snug">{{ topic.topic }}</p>
-          <button
-            type="button"
-            :class="[btnPrimaryClass, 'w-full py-1.5 text-xs']"
-            @click="useTopic(topic)"
+          <span
+            class="mb-1.5 inline-block rounded bg-amber-500/15 px-1.5 py-0.5 text-[0.62rem] font-bold tracking-wide text-amber-300 uppercase light:text-amber-700"
           >
-            {{ uiStore.tr('Cockpit Use Topic In Create') }}
-          </button>
+            {{ topic.category }}
+          </span>
+          <p class="cockpit-title line-clamp-2 text-sm leading-snug">{{ topic.topic }}</p>
         </li>
       </ul>
     </div>

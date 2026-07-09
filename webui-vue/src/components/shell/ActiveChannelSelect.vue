@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { channelAvatarSrc, channelsApi, type ChannelSummary } from '../../api/channels'
 import { ApiError } from '../../api/client'
 import { useActiveChannelSwitch } from '../../composables/useActiveChannelSwitch'
+import { formatTargetDurationLabel } from '../../lib/target-duration'
 import { useChannelsStore } from '../../stores/channels'
 import { useDashboardStore } from '../../stores/dashboard'
 import { useUiStore } from '../../stores/ui'
@@ -36,11 +37,10 @@ const channelMeta = computed(() => {
   const config = dashboardStore.channelConfig ?? {}
   const ws = workspaceStore.workspace
   const aspect = String(ws?.media.video_aspect ?? runtime.video_aspect ?? '9:16')
-  const duration = String(runtime.target_duration ?? '60-90')
-  const durationLabel = duration.includes('s') ? duration : `${duration}s`
+  const duration = formatTargetDurationLabel(String(runtime.target_duration ?? '60-90'))
   const lang = String(config.video_language ?? ws?.script.video_language ?? 'pt-BR')
   const llm = String(dashboardStore.providers?.llm?.detail ?? '—')
-  return `${aspect} • ${durationLabel} • ${llm} • ${lang}`
+  return `${aspect} • ${duration} • ${llm} • ${lang}`
 })
 
 const cardGearBtnClass =

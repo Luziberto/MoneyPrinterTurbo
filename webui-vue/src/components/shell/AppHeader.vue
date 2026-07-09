@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import ActiveChannelSelect from './ActiveChannelSelect.vue'
 import { KNOWN_LOCALES, type LocaleCode } from '../../api/i18n'
 import { useTheme } from '../../composables/useTheme'
+import { formatTargetDurationLabel } from '../../lib/target-duration'
 import { useDashboardStore } from '../../stores/dashboard'
 import { useUiStore } from '../../stores/ui'
 import { useWorkspaceStore } from '../../stores/workspace'
@@ -38,19 +39,20 @@ const dashboardStore = useDashboardStore()
 const { isDark, toggleTheme } = useTheme()
 
 const metrics = computed(() => {
-  const ws = workspaceStore.workspace
   const runtime = dashboardStore.channelRuntime ?? {}
-  const targetClips =
-    ws?.media.collector_target_clips ??
-    (runtime.collector as { target_clips?: number } | undefined)?.target_clips ??
-    25
-  const aspect = ws?.media.video_aspect ?? String(runtime.video_aspect ?? '9:16')
-  const duration = String(runtime.target_duration ?? '60-90')
-  const durationLabel = duration.includes('s') ? duration : `${duration}s`
+  const config = dashboardStore.channelConfig ?? {}
+  const videosGeneratedToday = Number(runtime.videos_generated_today ?? 0)
+  const videosPerDay = Math.max(
+    1,
+    Number(runtime.videos_per_day ?? config.videos_per_day ?? 1),
+  )
+  const aspect =
+    workspaceStore.workspace?.media.video_aspect ?? String(runtime.video_aspect ?? '9:16')
+  const duration = formatTargetDurationLabel(String(runtime.target_duration ?? '60-90'))
   return {
-    clips: targetClips,
+    clips: `${videosGeneratedToday}/${videosPerDay}`,
     aspect,
-    duration: durationLabel,
+    duration,
     providers: `${dashboardStore.readyCount}/${dashboardStore.totalProviders}`,
   }
 })
@@ -141,7 +143,7 @@ function onLocaleChange(event: Event) {
 
       <!-- Canal ativo + specs — centro -->
       <div class="flex justify-center lg:justify-self-center lg:self-center">
-        <div class="flex items-stretch gap-1">
+        <div class="flex items-stretch gap-2">
           <ActiveChannelSelect variant="card" class="shrink-0" />
 
           <div

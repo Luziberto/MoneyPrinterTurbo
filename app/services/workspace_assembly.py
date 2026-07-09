@@ -17,6 +17,7 @@ from app.models.schema import (
     Workspace,
 )
 from app.services.cockpit_state import build_channel_runtime
+from app.utils.target_duration import paragraph_number_from_target_duration
 
 
 def _collector_limits(workspace: Workspace, channel_runtime: dict[str, Any] | None) -> tuple[int, int]:
@@ -40,6 +41,12 @@ def assemble_video_params(
         channel_runtime = build_channel_runtime(workspace.channel_slug)
 
     target_clips, min_clips = _collector_limits(workspace, channel_runtime)
+
+    target_duration = str((channel_runtime or {}).get("target_duration") or "").strip()
+    if target_duration:
+        paragraph_number = paragraph_number_from_target_duration(target_duration)
+    else:
+        paragraph_number = int(workspace.script.paragraph_number or 1)
 
     if workspace.subtitle.subtitle_background_enabled:
         text_background_color: Any = workspace.subtitle.subtitle_background_color
@@ -83,7 +90,7 @@ def assemble_video_params(
         font_size=int(workspace.subtitle.font_size or 55),
         stroke_color=str(workspace.subtitle.stroke_color or "#000000"),
         stroke_width=float(workspace.subtitle.stroke_width or 2.5),
-        paragraph_number=int(workspace.script.paragraph_number or 1),
+        paragraph_number=paragraph_number,
         video_script_prompt=str(workspace.script.video_script_prompt or ""),
         custom_system_prompt=(
             str(workspace.script.custom_system_prompt or "")

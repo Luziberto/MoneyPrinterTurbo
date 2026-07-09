@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ensureAutoScriptReady, scriptStepBusy, scriptStepError } from '../../composables/useScriptStep'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { STEP_IDS } from '../../types/workspace'
 
@@ -8,6 +9,7 @@ const props = defineProps<{ activeStep: string }>()
 
 const router = useRouter()
 const workspaceStore = useWorkspaceStore()
+const leavingScript = ref(false)
 
 const stepLabels: Record<string, string> = {
   script: 'Roteiro',
@@ -26,8 +28,15 @@ const steps = computed(() =>
   })),
 )
 
-function goTo(stepId: string) {
-  router.push(`/criar/${stepId}`)
+async function goTo(stepId: string) {
+  if (props.activeStep === 'script' && stepId !== 'script') {
+    leavingScript.value = true
+    scriptStepError.value = null
+    const ok = await ensureAutoScriptReady()
+    leavingScript.value = false
+    if (!ok) return
+  }
+  await router.push(`/criar/${stepId}`)
 }
 
 function stepClass(step: { id: string; state: string }) {
@@ -56,6 +65,7 @@ function dotClass(state: string, isCurrent: boolean) {
         :key="step.id"
         type="button"
         :class="stepClass(step)"
+        :disabled="leavingScript || scriptStepBusy"
         @click="goTo(step.id)"
       >
         <span

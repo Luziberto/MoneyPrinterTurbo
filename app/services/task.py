@@ -75,8 +75,12 @@ def generate_terms(task_id, params, video_script):
         generated = llm.generate_terms(
             video_subject=params.video_subject,
             video_script=video_script,
-            amount=llm.default_terms_amount(params.match_materials_to_script),
+            amount=llm.default_terms_amount(
+                params.match_materials_to_script,
+                params.paragraph_number,
+            ),
             match_script_order=params.match_materials_to_script,
+            paragraph_number=params.paragraph_number,
         )
         if isinstance(generated, str):
             return generated

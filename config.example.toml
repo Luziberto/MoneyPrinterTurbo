@@ -94,8 +94,10 @@ collector_enable_legacy_fallback = false
 collector_fallback_source = "stock"
 
 # Video search terms (llm.generate_terms) ###################################
-# Overrides the default term count (8 when match_materials_to_script, else 5).
-terms_amount = 8
+# Keywords generated per script paragraph when match_materials_to_script is on.
+keywords_per_paragraph = 2
+# Overrides the default term count when match_materials_to_script is off.
+terms_amount = 5
 # "visual_package" (default): term + weight + visual_intent + alternatives +
 # required_concepts + optional_concepts per item. "simple": legacy term+weight
 # only — lighter prompt/response, use for weaker LLMs (e.g. small local models).

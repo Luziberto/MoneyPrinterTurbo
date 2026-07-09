@@ -15,6 +15,8 @@ VALID_STATUSES = frozenset(
     {"pending", "processing", "generated", "failed", "approved", "published"}
 )
 
+GENERATED_VIDEO_STATUSES = frozenset({"generated", "approved", "published"})
+
 
 def topic_hash(topic: str) -> str:
     normalized = (topic or "").strip().lower()

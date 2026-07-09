@@ -1,15 +1,49 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useWorkspaceStore } from '../../stores/workspace'
-import { llmApi } from '../../api/llm'
-import { ApiError } from '../../api/client'
 import { btnPrimaryClass, inputClass, labelClass, selectClass } from '../../lib/cockpit-ui'
+import {
+  formatTargetDurationLabel,
+  paragraphNumberFromTargetDuration,
+} from '../../lib/target-duration'
+import { useDashboardStore } from '../../stores/dashboard'
+import {
+  createKeyword,
+  isManualScriptMode,
+  polishCurrentScript,
+  scriptStepBusy,
+  scriptStepError,
+} from '../../composables/useScriptStep'
+import { useUiStore } from '../../stores/ui'
 import TopicsQueuePanel from './TopicsQueuePanel.vue'
+import { X } from '../../lib/cockpit-icons'
+import type { CollectorKeyword } from '../../types/workspace'
 
+const uiStore = useUiStore()
 const workspaceStore = useWorkspaceStore()
-const generatingScript = ref(false)
-const generatingTerms = ref(false)
-const errorMessage = ref<string | null>(null)
+const dashboardStore = useDashboardStore()
+const newKeyword = ref('')
+
+const isManual = computed(() => {
+  const mode = workspaceStore.workspace?.script.script_mode ?? 'auto'
+  return isManualScriptMode(mode)
+})
+
+const scriptReadonly = computed(() => !isManual.value && Boolean(workspaceStore.workspace?.script.video_script.trim()))
+
+const scriptDurationLabel = computed(() =>
+  formatTargetDurationLabel(String(dashboardStore.channelRuntime?.target_duration ?? '')),
+)
+
+const derivedParagraphs = computed(() =>
+  paragraphNumberFromTargetDuration(String(dashboardStore.channelRuntime?.target_duration ?? '')),
+)
+
+const scriptPlaceholder = computed(() =>
+  isManual.value
+    ? 'Escreva ou cole o roteiro completo'
+    : 'Gerado automaticamente ao avançar para o próximo passo',
+)
 
 function ws() {
   if (!workspaceStore.workspace) throw new Error('workspace not loaded')
@@ -24,63 +58,42 @@ async function onScriptChange(event: Event) {
   await workspaceStore.patch({ script: { video_script: (event.target as HTMLTextAreaElement).value } })
 }
 
-async function onParagraphChange(event: Event) {
+async function onModeChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
   await workspaceStore.patch({
-    script: { paragraph_number: Number((event.target as HTMLInputElement).value) },
+    script: { script_mode: value === 'manual' ? 'verbatim' : 'auto' },
   })
 }
 
-async function onScriptModeChange(event: Event) {
+async function polishScript() {
+  await polishCurrentScript()
+}
+
+async function addKeyword() {
+  const term = newKeyword.value.trim()
+  if (!term) return
+  const terms = [...ws().keywords.terms]
+  if (terms.some((item) => item.term.toLowerCase() === term.toLowerCase())) {
+    newKeyword.value = ''
+    return
+  }
+  terms.push(createKeyword(term))
+  newKeyword.value = ''
   await workspaceStore.patch({
-    script: { script_mode: (event.target as HTMLSelectElement).value as 'auto' | 'verbatim' | 'polish' },
+    keywords: { terms, has_explicit_weights: ws().keywords.has_explicit_weights },
   })
 }
 
-async function generateScript() {
-  errorMessage.value = null
-  generatingScript.value = true
-  try {
-    const { video_script } = await llmApi.generateScript({
-      video_subject: ws().script.video_subject,
-      video_language: ws().script.video_language,
-      paragraph_number: ws().script.paragraph_number,
-      video_script_prompt: ws().script.video_script_prompt,
-      custom_system_prompt: ws().script.use_custom_system_prompt ? ws().script.custom_system_prompt : '',
-    })
-    if (video_script.startsWith('Error:')) {
-      errorMessage.value = video_script
-      return
-    }
-    await workspaceStore.patch({ script: { video_script } })
-  } catch (err) {
-    errorMessage.value = err instanceof ApiError ? err.message : String(err)
-  } finally {
-    generatingScript.value = false
-  }
+async function removeKeyword(index: number) {
+  const terms = ws().keywords.terms.filter((_, i) => i !== index)
+  await workspaceStore.patch({
+    keywords: { terms, has_explicit_weights: ws().keywords.has_explicit_weights },
+  })
 }
 
-async function generateTerms() {
-  errorMessage.value = null
-  generatingTerms.value = true
-  try {
-    const result = await llmApi.generateTerms({
-      video_subject: ws().script.video_subject,
-      video_script: ws().script.video_script,
-      amount: ws().script.match_materials_to_script ? 8 : 5,
-      match_materials_to_script: ws().script.match_materials_to_script,
-    })
-    if (typeof result.video_terms === 'string') {
-      errorMessage.value = result.video_terms
-      return
-    }
-    await workspaceStore.patch({
-      keywords: { terms: result.video_terms, has_explicit_weights: result.has_explicit_weights ?? false },
-    })
-  } catch (err) {
-    errorMessage.value = err instanceof ApiError ? err.message : String(err)
-  } finally {
-    generatingTerms.value = false
-  }
+function keywordLabel(term: CollectorKeyword) {
+  if (!ws().keywords.has_explicit_weights) return term.term
+  return `${term.term} (${term.weight.toFixed(2)})`
 }
 </script>
 
@@ -93,77 +106,122 @@ async function generateTerms() {
       <h2 class="text-[1.65rem] font-bold tracking-tight">Roteiro</h2>
 
       <label class="flex flex-col gap-1.5">
-      <span :class="labelClass">Assunto</span>
-      <input
-        type="text"
-        :class="inputClass"
-        :value="workspaceStore.workspace.script.video_subject"
-        placeholder="Sobre o que é o vídeo?"
-        @change="onSubjectChange"
-      />
-    </label>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <label class="flex flex-col gap-1.5">
-        <span :class="labelClass">Parágrafos</span>
+        <span :class="labelClass">Assunto</span>
         <input
-          type="number"
-          min="1"
-          max="10"
+          type="text"
           :class="inputClass"
-          :value="workspaceStore.workspace.script.paragraph_number"
-          @change="onParagraphChange"
+          :value="workspaceStore.workspace.script.video_subject"
+          placeholder="Sobre o que é o vídeo?"
+          @change="onSubjectChange"
         />
       </label>
+
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div class="flex flex-col gap-1.5" :class="{ 'sm:col-span-2': isManual }">
+          <span :class="labelClass">{{ uiStore.tr('Script Mode') }}</span>
+          <div class="flex items-center gap-2">
+            <select
+              :class="[selectClass, 'min-w-0 flex-1']"
+              :value="isManual ? 'manual' : 'auto'"
+              @change="onModeChange"
+            >
+              <option value="auto">{{ uiStore.tr('Script Mode Auto') }}</option>
+              <option value="manual">{{ uiStore.tr('Cockpit Script Mode Manual') }}</option>
+            </select>
+            <button
+              v-if="isManual"
+              type="button"
+              :class="[btnPrimaryClass, 'shrink-0 whitespace-nowrap px-3 py-2 text-sm']"
+              :disabled="scriptStepBusy || !workspaceStore.workspace.script.video_script.trim()"
+              @click="polishScript"
+            >
+              {{ scriptStepBusy ? uiStore.tr('Cockpit Loading') : uiStore.tr('Cockpit Script Polish') }}
+            </button>
+          </div>
+        </div>
+        <div v-if="!isManual" class="flex flex-col gap-1.5">
+          <span :class="labelClass">{{ uiStore.tr('Cockpit Target Duration') }}</span>
+          <div :class="[inputClass, 'opacity-90']">
+            {{ scriptDurationLabel }}
+            <span class="cockpit-muted text-xs"> · {{ derivedParagraphs }} parágrafos</span>
+          </div>
+        </div>
+      </div>
+
       <label class="flex flex-col gap-1.5">
-        <span :class="labelClass">Modo</span>
-        <select
-          :class="selectClass"
-          :value="workspaceStore.workspace.script.script_mode"
-          @change="onScriptModeChange"
-        >
-          <option value="auto">Automático</option>
-          <option value="verbatim">Verbatim</option>
-          <option value="polish">Polir</option>
-        </select>
+        <span :class="labelClass">Roteiro</span>
+        <textarea
+          rows="8"
+          :class="[inputClass, 'resize-y', scriptReadonly ? 'opacity-90' : '']"
+          :value="workspaceStore.workspace.script.video_script"
+          :placeholder="scriptPlaceholder"
+          :readonly="scriptReadonly"
+          @change="onScriptChange"
+        />
       </label>
-    </div>
 
-    <label class="flex flex-col gap-1.5">
-      <span :class="labelClass">Roteiro</span>
-      <textarea
-        rows="8"
-        :class="[inputClass, 'resize-y']"
-        :value="workspaceStore.workspace.script.video_script"
-        placeholder="Deixe em branco para gerar automaticamente"
-        @change="onScriptChange"
-      />
-    </label>
+      <p v-if="!isManual" class="cockpit-muted text-xs">
+        {{ uiStore.tr('Cockpit Script Auto Hint') }}
+      </p>
 
-    <div class="mt-1 flex flex-wrap gap-2.5">
-      <button :class="btnPrimaryClass" :disabled="generatingScript" @click="generateScript">
-        {{ generatingScript ? 'Gerando…' : 'Gerar roteiro' }}
-      </button>
-      <button :class="btnPrimaryClass" :disabled="generatingTerms" @click="generateTerms">
-        {{ generatingTerms ? 'Gerando…' : 'Gerar palavras-chave' }}
-      </button>
-    </div>
+      <p v-if="scriptStepError" class="text-sm text-rose-400">{{ scriptStepError }}</p>
+      <p v-if="scriptStepBusy && !isManual" class="cockpit-muted text-sm">
+        {{ uiStore.tr('Cockpit Loading') }}…
+      </p>
 
-    <p v-if="errorMessage" class="text-sm text-rose-400">{{ errorMessage }}</p>
+      <div v-if="isManual" class="flex flex-col gap-2">
+        <span :class="labelClass">{{ uiStore.tr('Cockpit Keywords Title') }}</span>
+        <div class="flex flex-wrap gap-2">
+          <span
+            v-for="(term, index) in workspaceStore.workspace.keywords.terms"
+            :key="`${term.term}-${index}`"
+            class="inline-flex items-center gap-1 rounded-full bg-slate-800/80 py-1 pr-1 pl-2.5 text-xs light:bg-slate-100"
+          >
+            {{ keywordLabel(term) }}
+            <button
+              type="button"
+              class="grid size-5 place-items-center rounded-full text-slate-400 transition hover:bg-slate-700/60 hover:text-rose-300 light:hover:bg-slate-200 light:hover:text-rose-600"
+              :title="uiStore.tr('Cockpit Keywords Remove')"
+              @click="removeKeyword(index)"
+            >
+              <X :size="12" />
+            </button>
+          </span>
+        </div>
+        <div class="flex gap-2">
+          <input
+            v-model="newKeyword"
+            type="text"
+            :class="[inputClass, 'min-w-0 flex-1']"
+            :placeholder="uiStore.tr('Cockpit Keywords Placeholder')"
+            @keyup.enter="addKeyword"
+          />
+          <button
+            type="button"
+            :class="[btnPrimaryClass, 'shrink-0 px-3']"
+            :disabled="!newKeyword.trim()"
+            @click="addKeyword"
+          >
+            {{ uiStore.tr('Cockpit Keywords Add') }}
+          </button>
+        </div>
+      </div>
 
-    <div v-if="workspaceStore.workspace.keywords.terms.length > 0">
-      <h3 class="mb-2 text-sm font-semibold text-slate-400">Palavras-chave</h3>
-      <ul class="flex flex-wrap gap-1.5 p-0 list-none">
-        <li
-          v-for="term in workspaceStore.workspace.keywords.terms"
-          :key="term.term"
-          class="rounded-full bg-slate-800/80 px-2.5 py-1 text-xs"
-        >
-          {{ term.term }}
-          <span class="text-slate-500">({{ term.weight.toFixed(2) }})</span>
-        </li>
-      </ul>
-    </div>
+      <div
+        v-else-if="workspaceStore.workspace.keywords.terms.length > 0"
+        class="flex flex-col gap-2"
+      >
+        <span :class="labelClass">{{ uiStore.tr('Cockpit Keywords Title') }}</span>
+        <ul class="flex flex-wrap gap-1.5 p-0 list-none">
+          <li
+            v-for="term in workspaceStore.workspace.keywords.terms"
+            :key="term.term"
+            class="rounded-full bg-slate-800/80 px-2.5 py-1 text-xs light:bg-slate-100"
+          >
+            {{ keywordLabel(term) }}
+          </li>
+        </ul>
+      </div>
     </div>
 
     <TopicsQueuePanel class="hidden w-full self-start xl:flex" />

@@ -110,6 +110,13 @@ def update_channel(request: Request, slug: str, body: ChannelUpdateBody):
         channel = _load_channel_or_404(request, slug)
         return utils.get_response(200, _channel_summary(slug, channel))
 
+    if updates.get("target_duration"):
+        from app.utils.target_duration import paragraph_number_from_target_duration
+
+        updates["paragraph_number"] = paragraph_number_from_target_duration(
+            str(updates["target_duration"])
+        )
+
     try:
         channel = save_channel_config(slug, updates)
     except ValueError as exc:

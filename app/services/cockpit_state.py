@@ -11,6 +11,7 @@ from typing import Any
 
 from app.models.schema import Workspace
 from app.utils import utils
+from app.utils.target_duration import paragraph_number_from_target_duration
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 PIPELINE_DIR = ROOT_DIR / "pipeline"
@@ -96,11 +97,26 @@ def build_channel_runtime(slug: str) -> dict[str, Any]:
     if transition is not None and hasattr(transition, "value"):
         transition = transition.value
 
+    target_duration = str(channel.get("target_duration", "") or "")
+    if target_duration:
+        paragraph_number = paragraph_number_from_target_duration(target_duration)
+    else:
+        paragraph_number = int(channel.get("paragraph_number", 1) or 1)
+
+    try:
+        videos_per_day = max(1, int(channel.get("videos_per_day", 1) or 1))
+    except (TypeError, ValueError):
+        videos_per_day = 1
+
+    from lib.topic_store import TopicStore
+
+    videos_generated_today = TopicStore().count_generated_today(slug)
+
     return {
         "slug": slug,
         "name": str(channel.get("name", slug) or slug),
         "video_subject": str(channel.get("niche", "") or "").strip(),
-        "paragraph_number_input": int(channel.get("paragraph_number", 1) or 1),
+        "paragraph_number_input": paragraph_number,
         "match_materials_to_script": bool(channel.get("match_materials_to_script", False)),
         "video_script_prompt": str(channel.get("video_script_prompt", "") or "").strip(),
         "title_enabled": bool(channel.get("title_enabled", False)),
@@ -142,6 +158,8 @@ def build_channel_runtime(slug: str) -> dict[str, Any]:
         "video_count": int(channel.get("video_count", 1) or 1),
         "target_duration": str(channel.get("target_duration", "") or ""),
         "target_words": str(channel.get("target_words", "") or ""),
+        "videos_per_day": videos_per_day,
+        "videos_generated_today": videos_generated_today,
         "mode": str(channel.get("mode", "faceless") or "faceless"),
         "collector": dict(channel.get("collector") or {}),
     }

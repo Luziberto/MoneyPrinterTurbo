@@ -107,14 +107,7 @@ class TestScriptPromptOptions(unittest.TestCase):
         self.assertIn("开头更有悬念", captured["prompt"])
 
     def test_generate_terms_can_request_script_ordered_keywords(self):
-        """
-        按文案顺序匹配素材依赖 LLM 返回有序关键词。这里不调用真实模型，
-        只验证服务层会把"按脚本叙事顺序输出"的约束写入 prompt，避免
-        后续素材下载虽然顺序化，但关键词仍然是全局无序主题词。
-
-        Default mode is visual_package: the response now carries visual_intent /
-        alternatives / required_concepts / optional_concepts per item.
-        """
+        """match_script_order now generates keywords per paragraph, then merges."""
         captured = {}
 
         def fake_generate_response(prompt):
@@ -122,28 +115,67 @@ class TestScriptPromptOptions(unittest.TestCase):
             return json.dumps(
                 [
                     {
-                        "term": "opening city",
-                        "weight": 1.0,
-                        "visual_intent": "Abre com a cidade para situar o espectador.",
-                        "alternatives": ["city skyline", "urban opening shot"],
-                        "required_concepts": ["city"],
-                        "optional_concepts": ["skyline"],
+                        "paragraph_index": 1,
+                        "keywords": [
+                            {
+                                "term": "opening city",
+                                "weight": 1.0,
+                                "visual_intent": "Abre com a cidade para situar o espectador.",
+                                "alternatives": ["city skyline", "urban opening shot"],
+                                "required_concepts": ["city"],
+                                "optional_concepts": ["skyline"],
+                            },
+                            {
+                                "term": "city skyline",
+                                "weight": 0.9,
+                                "visual_intent": "Reforça o cenário urbano inicial.",
+                                "alternatives": ["urban skyline"],
+                                "required_concepts": ["city"],
+                                "optional_concepts": ["skyline"],
+                            },
+                        ],
                     },
                     {
-                        "term": "middle office",
-                        "weight": 0.85,
-                        "visual_intent": "Mostra o escritório no meio da narrativa.",
-                        "alternatives": ["office interior"],
-                        "required_concepts": ["office"],
-                        "optional_concepts": [],
+                        "paragraph_index": 2,
+                        "keywords": [
+                            {
+                                "term": "middle office",
+                                "weight": 0.85,
+                                "visual_intent": "Mostra o escritório no meio da narrativa.",
+                                "alternatives": ["office interior"],
+                                "required_concepts": ["office"],
+                                "optional_concepts": [],
+                            },
+                            {
+                                "term": "office interior",
+                                "weight": 0.8,
+                                "visual_intent": "Detalhe do ambiente de trabalho.",
+                                "alternatives": ["office desk"],
+                                "required_concepts": ["office"],
+                                "optional_concepts": [],
+                            },
+                        ],
                     },
                     {
-                        "term": "final sunset",
-                        "weight": 0.7,
-                        "visual_intent": "Encerra com o pôr do sol.",
-                        "alternatives": ["sunset sky"],
-                        "required_concepts": ["sunset"],
-                        "optional_concepts": ["sky"],
+                        "paragraph_index": 3,
+                        "keywords": [
+                            {
+                                "term": "final sunset",
+                                "weight": 0.7,
+                                "visual_intent": "Encerra com o pôr do sol.",
+                                "alternatives": ["sunset sky"],
+                                "required_concepts": ["sunset"],
+                                "optional_concepts": ["sky"],
+                            },
+                            {
+                                "term": "sunset sky",
+                                "weight": 0.65,
+                                "visual_intent": "Céu no fechamento.",
+                                "alternatives": ["evening sky"],
+                                "required_concepts": ["sunset"],
+                                "optional_concepts": ["sky"],
+                            },
+                        ],
                     },
                 ]
             )
@@ -151,62 +183,69 @@ class TestScriptPromptOptions(unittest.TestCase):
         with patch.object(llm, "_generate_response", side_effect=fake_generate_response):
             result = llm.generate_terms(
                 video_subject="startup story",
-                video_script="First city. Then office. Finally sunset.",
-                amount=3,
+                video_script="First city.\n\nThen office.\n\nFinally sunset.",
+                amount=6,
                 match_script_order=True,
+                paragraph_number=3,
             )
 
         self.assertTrue(result.has_explicit_weights)
         dumped = [keyword.model_dump() for keyword in result.keywords]
-        self.assertEqual([k["term"] for k in dumped], ["opening city", "middle office", "final sunset"])
-        self.assertEqual([k["weight"] for k in dumped], [1.0, 0.85, 0.7])
-        self.assertEqual(dumped[0]["visual_intent"], "Abre com a cidade para situar o espectador.")
-        self.assertEqual(dumped[0]["alternatives"], ["city skyline", "urban opening shot"])
-        self.assertEqual(dumped[0]["required_concepts"], ["city"])
-        self.assertEqual(dumped[0]["optional_concepts"], ["skyline"])
-        self.assertIn("chronological stock-video search packages", captured["prompt"])
-        self.assertIn("visual moment", captured["prompt"])
-        self.assertIn("same order as the script narration", captured["prompt"])
+        self.assertEqual(dumped[0]["term"], "opening city")
+        self.assertGreater(dumped[0]["weight"], dumped[-1]["weight"])
+        self.assertIn("Paragraph-aligned Stock Footage Keyword Generator", captured["prompt"])
+        self.assertIn("### Paragraph 1", captured["prompt"])
         self.assertIn("alternatives", captured["prompt"])
         self.assertIn("required_concepts", captured["prompt"])
-        self.assertIn("optional_concepts", captured["prompt"])
-        self.assertIn('"weight"', captured["prompt"])
 
     def test_generate_terms_simple_mode_keeps_legacy_prompt_and_shape(self):
-        """terms_output_mode="simple" is the escape hatch for weaker LLMs: no
-        visual-package vocabulary in the prompt, and the model still fills the
-        new fields with compat defaults (required_concepts = term.split())."""
+        """terms_output_mode="simple" still works in paragraph-aligned mode."""
         captured = {}
 
         def fake_generate_response(prompt):
             captured["prompt"] = prompt
-            return '[{"term": "opening city", "weight": 1.0}, {"term": "middle office", "weight": 0.85}, {"term": "final sunset", "weight": 0.7}]'
+            return json.dumps(
+                [
+                    {
+                        "paragraph_index": 1,
+                        "keywords": [
+                            {"term": "opening city", "weight": 1.0},
+                            {"term": "city skyline", "weight": 0.9},
+                        ],
+                    },
+                    {
+                        "paragraph_index": 2,
+                        "keywords": [
+                            {"term": "middle office", "weight": 0.85},
+                            {"term": "office interior", "weight": 0.8},
+                        ],
+                    },
+                    {
+                        "paragraph_index": 3,
+                        "keywords": [
+                            {"term": "final sunset", "weight": 0.7},
+                            {"term": "sunset sky", "weight": 0.65},
+                        ],
+                    },
+                ]
+            )
 
         with patch.object(llm, "_generate_response", side_effect=fake_generate_response):
             result = llm.generate_terms(
                 video_subject="startup story",
-                video_script="First city. Then office. Finally sunset.",
-                amount=3,
+                video_script="First city.\n\nThen office.\n\nFinally sunset.",
+                amount=6,
                 match_script_order=True,
+                paragraph_number=3,
                 terms_output_mode="simple",
             )
 
         self.assertTrue(result.has_explicit_weights)
         dumped = [keyword.model_dump() for keyword in result.keywords]
-        self.assertEqual(
-            [{"term": k["term"], "weight": k["weight"]} for k in dumped],
-            [
-                {"term": "opening city", "weight": 1.0},
-                {"term": "middle office", "weight": 0.85},
-                {"term": "final sunset", "weight": 0.7},
-            ],
-        )
-        self.assertEqual(dumped[0]["visual_intent"], "")
-        self.assertEqual(dumped[0]["alternatives"], [])
-        self.assertEqual(dumped[0]["required_concepts"], ["opening", "city"])
+        self.assertEqual(dumped[0]["term"], "opening city")
         self.assertNotIn("visual_intent", captured["prompt"])
         self.assertNotIn("required_concepts", captured["prompt"])
-        self.assertIn("chronological stock-video search terms", captured["prompt"])
+        self.assertIn("Paragraph-aligned Stock Footage Keyword Generator", captured["prompt"])
 
     def test_generate_terms_accepts_legacy_string_array_response(self):
         def fake_generate_response(prompt):

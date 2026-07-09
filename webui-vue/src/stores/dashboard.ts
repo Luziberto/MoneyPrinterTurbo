@@ -4,7 +4,7 @@ import { cockpitApi, type ProvidersResponse } from '../api/cockpit'
 import { useChannelsStore } from './channels'
 import { useWorkspaceStore } from './workspace'
 
-export const PROVIDER_ORDER = ['collector', 'llm', 'tts', 'ffmpeg', 'bgm'] as const
+export const PROVIDER_ORDER = ['llm', 'collector', 'tts', 'ffmpeg', 'bgm'] as const
 export type ProviderKey = (typeof PROVIDER_ORDER)[number]
 
 export const PROVIDER_LABEL_KEYS: Record<ProviderKey, string> = {

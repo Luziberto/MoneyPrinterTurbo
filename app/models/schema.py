@@ -577,6 +577,7 @@ class VideoScriptParams:
     video_subject: Optional[str] = "春天的花海"
     video_language: Optional[str] = ""
     paragraph_number: int = Field(default=1, ge=1, le=10)
+    target_duration: Optional[str] = None
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
 
@@ -597,6 +598,8 @@ class VideoTermsParams:
     )
     amount: Optional[int] = 5
     match_materials_to_script: bool = False
+    paragraph_number: Optional[int] = None
+    target_duration: Optional[str] = None
 
 
 class VideoSocialMetadataParams:
@@ -631,6 +634,14 @@ class TaskQueryRequest(BaseModel):
 
 class VideoScriptRequest(VideoScriptParams, BaseModel):
     pass
+
+
+class VideoPolishScriptRequest(BaseModel):
+    brief: str
+    video_subject: str = ""
+    video_language: str = ""
+    paragraph_number: int = 3
+    target_duration: Optional[str] = None
 
 
 class VideoTermsRequest(VideoTermsParams, BaseModel):

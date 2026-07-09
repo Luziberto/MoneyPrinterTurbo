@@ -10,7 +10,7 @@ from openai import AzureOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
 
 from app.config import config
-from app.models.schema import NormalizedCollectorKeywords, normalize_collector_keywords
+from app.models.schema import CollectorKeyword, NormalizedCollectorKeywords, normalize_collector_keywords
 
 _max_retries = 5
 _DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
@@ -1011,6 +1011,7 @@ def build_script_prompt(
     paragraph_number: int = 1,
     video_script_prompt: str = "",
     custom_system_prompt: str = "",
+    target_duration: str = "",
 ) -> str:
     paragraph_number = _normalize_script_paragraph_number(paragraph_number)
     video_script_prompt = _limit_script_text(
@@ -1029,6 +1030,15 @@ def build_script_prompt(
 - video subject: {video_subject}
 - number of paragraphs: {paragraph_number}
 """.rstrip()
+    target_duration = str(target_duration or "").strip()
+    if target_duration:
+        from app.utils.target_duration import parse_target_duration
+
+        min_seconds, max_seconds = parse_target_duration(target_duration)
+        if min_seconds == max_seconds:
+            prompt += f"\n- target spoken duration: about {min_seconds} seconds"
+        else:
+            prompt += f"\n- target spoken duration: {min_seconds}-{max_seconds} seconds"
     if language:
         prompt += f"\n- language: {language}"
     if video_script_prompt:
@@ -1047,6 +1057,7 @@ def generate_script(
     paragraph_number: int = 1,
     video_script_prompt: str = "",
     custom_system_prompt: str = "",
+    target_duration: str = "",
 ) -> str:
     paragraph_number = _normalize_script_paragraph_number(paragraph_number)
     video_script_prompt = _limit_script_text(
@@ -1061,6 +1072,7 @@ def generate_script(
         paragraph_number=paragraph_number,
         video_script_prompt=video_script_prompt,
         custom_system_prompt=custom_system_prompt,
+        target_duration=target_duration,
     )
     final_script = ""
     logger.info(
@@ -1284,10 +1296,228 @@ _DEFAULT_OUTPUT_EXAMPLE = json.dumps(
 )
 
 
-def default_terms_amount(match_script_order: bool) -> int:
-    """Default number of terms to generate, overridable via terms_amount in config.toml."""
-    fallback = 8 if match_script_order else 5
-    return int(config.app.get("terms_amount", fallback))
+def default_keywords_per_paragraph() -> int:
+    try:
+        value = int(config.app.get("keywords_per_paragraph", 2))
+    except (TypeError, ValueError):
+        value = 2
+    return max(2, min(3, value))
+
+
+def default_terms_amount(
+    match_script_order: bool,
+    paragraph_number: int | None = None,
+) -> int:
+    """Default keyword count. Script-ordered mode derives from paragraph count."""
+    if match_script_order:
+        paragraphs = max(1, min(10, int(paragraph_number or 3)))
+        return paragraphs * default_keywords_per_paragraph()
+    return int(config.app.get("terms_amount", 5))
+
+
+def _parse_paragraph_grouped_terms_response(
+    response: str,
+    *,
+    paragraph_count: int,
+    keywords_per_paragraph: int,
+) -> list[list[CollectorKeyword]] | None:
+    from app.models.schema import CollectorKeyword
+
+    if not response:
+        return None
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        match = re.search(r"\[.*\]", response, re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group())
+        except json.JSONDecodeError:
+            return None
+
+    groups: list[list[CollectorKeyword]] = []
+
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+        if "keywords" in parsed[0]:
+            for item in parsed[:paragraph_count]:
+                if not isinstance(item, dict):
+                    continue
+                raw_keywords = item.get("keywords")
+                if not isinstance(raw_keywords, list):
+                    continue
+                normalized = normalize_collector_keywords(raw_keywords)
+                groups.append(normalized.keywords[:keywords_per_paragraph])
+            if groups:
+                return groups
+
+    if isinstance(parsed, list) and parsed and all(isinstance(item, list) for item in parsed):
+        for raw_group in parsed[:paragraph_count]:
+            normalized = normalize_collector_keywords(raw_group)
+            groups.append(normalized.keywords[:keywords_per_paragraph])
+        if groups:
+            return groups
+
+    flat = _parse_generated_terms_response(response)
+    if not flat or not flat.keywords:
+        return None
+
+    if paragraph_count <= 1:
+        return [flat.keywords[:keywords_per_paragraph]]
+
+    chunk_size = max(1, keywords_per_paragraph)
+    for index in range(paragraph_count):
+        start = index * chunk_size
+        chunk = flat.keywords[start : start + chunk_size]
+        if chunk:
+            groups.append(chunk)
+    return groups or None
+
+
+def _generate_terms_by_paragraph(
+    video_subject: str,
+    video_script: str,
+    *,
+    paragraph_number: int | None = None,
+    keywords_per_paragraph: int | None = None,
+    terms_output_mode: Optional[str] = None,
+) -> Union[NormalizedCollectorKeywords, str]:
+    from app.utils.keyword_pipeline import apply_paragraph_weights, split_script_paragraphs
+
+    mode = str(
+        terms_output_mode or config.app.get("terms_output_mode", "visual_package")
+    ).strip().lower()
+    if mode not in ("simple", "visual_package"):
+        mode = "visual_package"
+    output_rules = (
+        _VISUAL_PACKAGE_OUTPUT_RULES if mode == "visual_package" else _WEIGHTED_TERMS_OUTPUT_RULES
+    )
+
+    expected_paragraphs = _normalize_script_paragraph_number(paragraph_number)
+    keywords_per_paragraph = keywords_per_paragraph or default_keywords_per_paragraph()
+    paragraphs = split_script_paragraphs(video_script, expected_paragraphs)
+    if not paragraphs:
+        return "Error: failed to generate video terms."
+
+    numbered_blocks = "\n\n".join(
+        f"### Paragraph {index + 1}\n{paragraph}"
+        for index, paragraph in enumerate(paragraphs)
+    )
+    example_group = json.dumps(
+        [
+            {
+                "paragraph_index": 1,
+                "keywords": [
+                    {"term": "opening visual topic", "weight": 1.0},
+                    {"term": "supporting opening scene", "weight": 0.9},
+                ],
+            },
+            {
+                "paragraph_index": 2,
+                "keywords": [
+                    {"term": "middle visual topic", "weight": 0.85},
+                    {"term": "supporting middle scene", "weight": 0.75},
+                ],
+            },
+        ][: max(1, len(paragraphs))],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    prompt = f"""
+# Role: Paragraph-aligned Stock Footage Keyword Generator
+
+## Goal
+Generate search keywords paragraph by paragraph so the collector can cover the full narration:
+opening, development, and conclusion.
+
+## Rules
+1. Return only a JSON array with one object per paragraph, in narration order.
+2. Each object must contain `paragraph_index` (1-based) and `keywords`.
+3. Generate exactly {keywords_per_paragraph} keywords for every paragraph.
+4. Keywords must reflect only the matching paragraph, not the whole script.
+5. Use English stock-footage-friendly terms (1-5 words).
+6. Do not repeat the same term across paragraphs when avoidable.
+7. Weights inside each paragraph are relative; the pipeline will re-rank globally.
+
+{output_rules}
+
+## Output shape
+[
+  {{
+    "paragraph_index": 1,
+    "keywords": [ ... {keywords_per_paragraph} items ... ]
+  }},
+  ...
+]
+
+## Output example
+{example_group}
+
+## Context
+### Video Subject
+{video_subject}
+
+### Script Paragraphs
+{numbered_blocks}
+""".strip()
+
+    logger.info(
+        "generating paragraph-aligned terms: "
+        f"paragraphs={len(paragraphs)}, keywords_per_paragraph={keywords_per_paragraph}, mode={mode}"
+    )
+
+    search_terms: NormalizedCollectorKeywords | None = None
+    response = ""
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if "Error: " in response:
+                logger.error(f"failed to generate paragraph terms: {response}")
+                return response
+            groups = _parse_paragraph_grouped_terms_response(
+                response,
+                paragraph_count=len(paragraphs),
+                keywords_per_paragraph=keywords_per_paragraph,
+            )
+            if not groups:
+                logger.error("response is not a valid paragraph keyword list.")
+                continue
+            ranked = apply_paragraph_weights(groups)
+            if not ranked:
+                continue
+            search_terms = NormalizedCollectorKeywords(
+                keywords=ranked,
+                has_explicit_weights=True,
+            )
+        except Exception as exc:
+            logger.warning(f"failed to generate paragraph terms: {exc}")
+            if response:
+                groups = _parse_paragraph_grouped_terms_response(
+                    response,
+                    paragraph_count=len(paragraphs),
+                    keywords_per_paragraph=keywords_per_paragraph,
+                )
+                if groups:
+                    ranked = apply_paragraph_weights(groups)
+                    if ranked:
+                        search_terms = NormalizedCollectorKeywords(
+                            keywords=ranked,
+                            has_explicit_weights=True,
+                        )
+
+        if search_terms and search_terms.keywords:
+            break
+        if i < _max_retries:
+            logger.warning(f"failed to generate paragraph terms, trying again... {i + 1}")
+
+    if not search_terms or not search_terms.keywords:
+        return "Error: failed to generate video terms."
+
+    logger.success(
+        f"completed paragraph terms: \n{[keyword.model_dump() for keyword in search_terms.keywords]}"
+    )
+    return search_terms
 
 
 def generate_terms(
@@ -1296,7 +1526,16 @@ def generate_terms(
     amount: int = 5,
     match_script_order: bool = False,
     terms_output_mode: Optional[str] = None,
+    paragraph_number: int | None = None,
 ) -> Union[NormalizedCollectorKeywords, str]:
+    if match_script_order and str(video_script or "").strip():
+        return _generate_terms_by_paragraph(
+            video_subject=video_subject,
+            video_script=video_script,
+            paragraph_number=paragraph_number,
+            terms_output_mode=terms_output_mode,
+        )
+
     mode = str(
         terms_output_mode or config.app.get("terms_output_mode", "visual_package")
     ).strip().lower()

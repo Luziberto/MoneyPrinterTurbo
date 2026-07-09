@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from lib.channel import default_db_path
-from lib.topics import VALID_STATUSES, utc_now_iso
+from lib.topics import VALID_STATUSES, GENERATED_VIDEO_STATUSES, utc_now_iso
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
@@ -162,6 +162,23 @@ class TopicStore:
             else:
                 counts[status] = row["cnt"]
         return counts
+
+    def count_generated_today(self, channel_slug: str) -> int:
+        placeholders = ", ".join("?" for _ in GENERATED_VIDEO_STATUSES)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS cnt
+                FROM topics
+                WHERE channel_slug = ?
+                  AND status IN ({placeholders})
+                  AND generated_at IS NOT NULL
+                  AND generated_at != ''
+                  AND date(generated_at) = date('now')
+                """,
+                (channel_slug, *sorted(GENERATED_VIDEO_STATUSES)),
+            ).fetchone()
+        return int(row["cnt"])
 
     def next_id(self, channel_slug: str) -> int:
         with self._connect() as conn:
