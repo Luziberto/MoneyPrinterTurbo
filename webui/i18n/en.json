@@ -578,6 +578,17 @@
     "Cockpit Step Result Failed": "Render failed",
     "Cockpit Step Result Open Video": "Open video",
     "Cockpit Step Result Go To Library": "Go to library",
-    "Cockpit Step Result Create Another": "Create another"
+    "Cockpit Step Result Create Another": "Create another",
+    "Cockpit Channels Subtitle": "Manage channels and browse their topic history.",
+    "Cockpit Settings Subtitle": "Configure providers and infrastructure.",
+    "Cockpit Tarefas Queue": "Queue",
+    "Cockpit Tarefas Renders": "Renders",
+    "Cockpit Tarefas Uploads": "Uploads",
+    "Cockpit Tarefas Uploads Empty": "No pending uploads.",
+    "Cockpit Tarefas Collector": "Collector",
+    "Cockpit Tarefas Collector Status": "Status",
+    "Cockpit Tarefas Collector Reused": "Reused",
+    "Cockpit Tarefas Collector New": "New downloads",
+    "Cockpit Tarefas Collector Empty": "No collector job for this channel yet."
   }
 }

@@ -23,14 +23,12 @@ const router = createRouter({
     {
       path: '/canais',
       name: 'canais',
-      component: () => import('../views/ComingSoonView.vue'),
-      props: { titleKey: 'Cockpit Tab Channels' },
+      component: () => import('../views/CanaisView.vue'),
     },
     {
       path: '/configuracoes',
       name: 'configuracoes',
-      component: () => import('../views/ComingSoonView.vue'),
-      props: { titleKey: 'Cockpit Tab Settings' },
+      component: () => import('../views/ConfiguracoesView.vue'),
     },
     { path: '/config', redirect: '/configuracoes' },
     { path: '/historico', redirect: '/canais' },

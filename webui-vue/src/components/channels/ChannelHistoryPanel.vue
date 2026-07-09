@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useChannelsStore } from '../stores/channels'
-import { channelsApi, type Topic } from '../api/channels'
-import { ApiError } from '../api/client'
-import { cardClass, selectClass } from '../lib/cockpit-ui'
-import { useUiStore } from '../stores/ui'
+import { useChannelsStore } from '../../stores/channels'
+import { channelsApi, type Topic } from '../../api/channels'
+import { ApiError } from '../../api/client'
+import { cardClass, selectClass } from '../../lib/cockpit-ui'
+import { useUiStore } from '../../stores/ui'
 
 const uiStore = useUiStore()
 const channelsStore = useChannelsStore()
@@ -15,10 +15,6 @@ const loading = ref(false)
 const errorMessage = ref<string | null>(null)
 
 const USED_STATUSES = new Set(['generated', 'approved', 'published', 'processing'])
-
-const activeChannel = computed(() =>
-  channelsStore.channels.find((c) => c.slug === channelsStore.activeSlug),
-)
 
 const filterOptions = computed(() => [
   { value: 'used', label: uiStore.tr('Cockpit Topics Used') },
@@ -62,31 +58,14 @@ async function loadTopics() {
   }
 }
 
-onMounted(async () => {
-  await channelsStore.fetchChannels()
-  await loadTopics()
-})
-
+onMounted(loadTopics)
 watch(() => channelsStore.activeSlug, loadTopics)
 </script>
 
 <template>
   <div class="flex w-full flex-col gap-4">
-    <div>
-      <h2 class="cockpit-heading text-xl font-bold tracking-tight">
-        {{ uiStore.tr('Cockpit Tab History') }}
-      </h2>
-      <p class="cockpit-muted mt-1 text-sm">
-        {{ uiStore.tr('Cockpit History Subtitle') }}
-      </p>
-      <p v-if="activeChannel" class="cockpit-subtle mt-2 text-sm">
-        {{ uiStore.tr('Cockpit Active Channel') }}:
-        <strong class="cockpit-title">{{ activeChannel.name }}</strong>
-        <span class="text-slate-600 light:text-slate-400">({{ activeChannel.slug }})</span>
-      </p>
-    </div>
-
     <div class="flex flex-wrap items-center gap-4">
+      <h3 class="cockpit-title text-sm font-bold">{{ uiStore.tr('Cockpit Tab History') }}</h3>
       <select v-model="statusFilter" :class="selectClass">
         <option v-for="opt in filterOptions" :key="opt.value" :value="opt.value">
           {{ opt.label }}
@@ -103,10 +82,7 @@ watch(() => channelsStore.activeSlug, loadTopics)
       {{ uiStore.tr('Cockpit History Empty') }}
     </p>
 
-    <ul
-      v-else
-      class="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 xl:grid-cols-3"
-    >
+    <ul v-else class="grid list-none grid-cols-1 gap-3 p-0 sm:grid-cols-2 xl:grid-cols-3">
       <li
         v-for="topic in visibleTopics"
         :key="topic.uid"
@@ -122,8 +98,9 @@ watch(() => channelsStore.activeSlug, loadTopics)
         <div class="cockpit-muted space-y-0.5 text-xs">
           <p v-if="topic.generated_at">#{{ topic.id }} · {{ topic.generated_at }}</p>
           <p v-else>#{{ topic.id }}</p>
-          <p v-if="topic.task_id" class="truncate font-mono">task: {{ topic.task_id }}</p>
-          <p v-if="topic.video_path" class="truncate">{{ topic.video_path }}</p>
+          <RouterLink v-if="topic.task_id" :to="`/videos/${topic.task_id}`" class="block truncate font-mono no-underline">
+            task: {{ topic.task_id }}
+          </RouterLink>
         </div>
       </li>
     </ul>

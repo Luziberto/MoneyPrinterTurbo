@@ -561,6 +561,17 @@
     "Cockpit Step Result Failed": "Render falhou",
     "Cockpit Step Result Open Video": "Abrir vídeo",
     "Cockpit Step Result Go To Library": "Ir para biblioteca",
-    "Cockpit Step Result Create Another": "Criar outro"
+    "Cockpit Step Result Create Another": "Criar outro",
+    "Cockpit Channels Subtitle": "Gerencie canais e navegue pelo histórico de temas.",
+    "Cockpit Settings Subtitle": "Configure provedores e infraestrutura.",
+    "Cockpit Tarefas Queue": "Fila",
+    "Cockpit Tarefas Renders": "Renderizações",
+    "Cockpit Tarefas Uploads": "Uploads",
+    "Cockpit Tarefas Uploads Empty": "Nenhum upload pendente.",
+    "Cockpit Tarefas Collector": "Coletor",
+    "Cockpit Tarefas Collector Status": "Status",
+    "Cockpit Tarefas Collector Reused": "Reaproveitados",
+    "Cockpit Tarefas Collector New": "Novos downloads",
+    "Cockpit Tarefas Collector Empty": "Nenhum job do coletor para este canal ainda."
   }
 }
