@@ -30,90 +30,45 @@ function goTo(stepId: string) {
   router.push(`/criar/${stepId}`)
 }
 
-defineExpose({ props })
+function stepClass(step: { id: string; state: string }) {
+  const isCurrent = step.id === props.activeStep
+  const base =
+    'flex items-center gap-2.5 rounded-lg border-l-[3px] border-transparent px-3.5 py-2.5 text-left text-sm transition hover:bg-indigo-500/10 hover:text-slate-100'
+  if (isCurrent) {
+    return `${base} border-l-indigo-400 bg-indigo-500/20 font-semibold text-slate-50 light:text-slate-900`
+  }
+  return `${base} text-slate-500`
+}
+
+function dotClass(state: string, isCurrent: boolean) {
+  if (isCurrent) return 'bg-indigo-200'
+  if (state === 'done') return 'bg-emerald-400'
+  if (state === 'active') return 'bg-indigo-400'
+  return 'bg-slate-600'
+}
 </script>
 
 <template>
-  <div class="wizard">
-    <nav class="wizard__nav">
+  <div class="grid grid-cols-1 items-start gap-5 xl:grid-cols-[12.5rem_minmax(0,1fr)]">
+    <nav class="flex flex-col gap-0.5" aria-label="Pipeline steps">
       <button
         v-for="step in steps"
         :key="step.id"
-        class="wizard__step"
-        :class="[`wizard__step--${step.state}`, { 'wizard__step--current': step.id === props.activeStep }]"
+        type="button"
+        :class="stepClass(step)"
         @click="goTo(step.id)"
       >
-        <span class="wizard__dot" />
+        <span
+          class="size-1.5 shrink-0 rounded-full"
+          :class="dotClass(step.state, step.id === props.activeStep)"
+        />
         {{ step.label }}
       </button>
     </nav>
-    <div class="wizard__body">
+    <div
+      class="min-h-[26rem] min-w-0 rounded-xl border border-slate-600/20 bg-slate-900/45 p-3 sm:px-6 sm:py-4 light:border-slate-200 light:bg-white light:shadow-sm light:shadow-slate-200/50"
+    >
       <slot />
     </div>
   </div>
 </template>
-
-<style scoped>
-.wizard {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 1.5rem;
-  align-items: start;
-}
-
-.wizard__nav {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  position: sticky;
-  top: 1.5rem;
-}
-
-.wizard__step {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.55rem 0.75rem;
-  border: none;
-  border-radius: 0.5rem;
-  background: transparent;
-  color: var(--cockpit-text-muted);
-  font-size: 0.88rem;
-  text-align: left;
-}
-
-.wizard__step:hover {
-  background: var(--cockpit-surface-hover);
-}
-
-.wizard__step--current {
-  background: var(--cockpit-surface);
-  color: var(--cockpit-text);
-  font-weight: 600;
-  box-shadow: 0 0 0 1px var(--cockpit-border);
-}
-
-.wizard__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--cockpit-border);
-  flex-shrink: 0;
-}
-
-.wizard__step--done .wizard__dot {
-  background: var(--cockpit-success);
-}
-
-.wizard__step--active .wizard__dot {
-  background: var(--cockpit-accent);
-}
-
-.wizard__body {
-  background: var(--cockpit-surface);
-  border: 1px solid var(--cockpit-border);
-  border-radius: 0.75rem;
-  padding: 1.5rem;
-  min-height: 24rem;
-}
-</style>

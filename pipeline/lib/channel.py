@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,8 @@ ROOT_DIR = PIPELINE_DIR.parent
 
 SCRIPT_PROMPT_FILENAME = "script_prompt.md"
 CHANNEL_JSON_FILENAME = "channel.json"
+SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+AVATAR_FILENAMES = ("avatar.png", "avatar.jpg", "avatar.jpeg", "avatar.webp")
 
 CHANNEL_DEFAULTS: dict[str, Any] = {
     "video_language": "pt-BR",
@@ -172,6 +176,92 @@ def load_channel(slug: str) -> dict[str, Any]:
     config["name"] = config.get("name", slug)
 
     return config
+
+
+def validate_slug(slug: str) -> str:
+    normalized = str(slug or "").strip().lower()
+    if not SLUG_PATTERN.match(normalized):
+        raise ValueError(f"invalid channel slug: {slug}")
+    return normalized
+
+
+def channel_avatar_path(slug: str) -> Path | None:
+    base = channel_dir(slug)
+    for name in AVATAR_FILENAMES:
+        path = base / name
+        if path.is_file():
+            return path
+    return None
+
+
+def has_avatar(slug: str) -> bool:
+    return channel_avatar_path(slug) is not None
+
+
+def save_channel_avatar(slug: str, content: bytes, filename: str) -> Path:
+    _load_channel_json_or_raise(slug)
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError("avatar must be png, jpg, jpeg, or webp")
+    base = channel_dir(slug)
+    for name in AVATAR_FILENAMES:
+        existing = base / name
+        if existing.is_file():
+            existing.unlink()
+    stored_name = "avatar.webp" if suffix == ".webp" else ("avatar.jpg" if suffix in {".jpg", ".jpeg"} else "avatar.png")
+    dest = base / stored_name
+    dest.write_bytes(content)
+    return dest
+
+
+def _load_channel_json_or_raise(slug: str) -> dict[str, Any]:
+    json_path = channel_dir(slug) / CHANNEL_JSON_FILENAME
+    if not json_path.is_file():
+        raise FileNotFoundError(f"Channel config not found: {json_path}")
+    with open(json_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_channel_json(slug: str, raw_config: dict[str, Any]) -> None:
+    raw_config["slug"] = slug
+    _normalize_channel_collections(raw_config)
+    json_path = channel_dir(slug) / CHANNEL_JSON_FILENAME
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(raw_config, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def create_channel(slug: str, name: str, niche: str = "", **extra: Any) -> dict[str, Any]:
+    normalized = validate_slug(slug)
+    base = channel_dir(normalized)
+    if base.exists():
+        raise FileExistsError(f"channel already exists: {normalized}")
+
+    base.mkdir(parents=True)
+    raw_config = deepcopy(CHANNEL_DEFAULTS)
+    raw_config.update({"slug": normalized, "name": name.strip() or normalized, "niche": niche.strip(), **extra})
+    _write_channel_json(normalized, raw_config)
+    (base / SCRIPT_PROMPT_FILENAME).write_text("", encoding="utf-8")
+    return load_channel(normalized)
+
+
+def save_channel_config(slug: str, updates: dict[str, Any]) -> dict[str, Any]:
+    normalized = validate_slug(slug)
+    raw_config = _load_channel_json_or_raise(normalized)
+    for key, value in updates.items():
+        if key in {"slug", "video_script_prompt"}:
+            continue
+        raw_config[key] = value
+    _write_channel_json(normalized, raw_config)
+    return load_channel(normalized)
+
+
+def delete_channel(slug: str) -> None:
+    normalized = validate_slug(slug)
+    base = channel_dir(normalized)
+    if not base.is_dir():
+        raise FileNotFoundError(f"channel not found: {normalized}")
+    shutil.rmtree(base)
 
 
 def default_db_path() -> Path:

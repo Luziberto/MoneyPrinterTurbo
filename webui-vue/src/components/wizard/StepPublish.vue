@@ -4,6 +4,7 @@ import { useWorkspaceStore } from '../../stores/workspace'
 import { publishApi, type PublishStatus } from '../../api/publish'
 import { videosApi } from '../../api/videos'
 import { ApiError } from '../../api/client'
+import { btnPrimaryClass } from '../../lib/cockpit-ui'
 
 const workspaceStore = useWorkspaceStore()
 const status = ref<PublishStatus | null>(null)
@@ -52,19 +53,24 @@ async function publishNow() {
 </script>
 
 <template>
-  <div class="step-publish">
-    <h2>Publicar</h2>
+  <div class="flex max-w-lg flex-col gap-4">
+    <h2 class="text-xl font-bold tracking-tight">Publicar</h2>
 
-    <p v-if="status && !status.configured" class="hint">
-      Backend "{{ status.backend }}" não está configurado -- publique manualmente por enquanto.
+    <p v-if="status && !status.configured" class="text-sm text-slate-500">
+      Backend "{{ status.backend }}" não está configurado — publique manualmente por enquanto.
     </p>
 
-    <p v-if="videoPaths.length === 0" class="hint">Nenhum vídeo renderizado ainda.</p>
+    <p v-if="videoPaths.length === 0" class="text-sm text-slate-500">Nenhum vídeo renderizado ainda.</p>
 
-    <div v-if="status" class="platforms">
-      <label v-for="platform in status.platforms" :key="platform" class="checkbox">
+    <div v-if="status" class="flex flex-wrap gap-4">
+      <label
+        v-for="platform in status.platforms"
+        :key="platform"
+        class="flex items-center gap-1.5 text-sm"
+      >
         <input
           type="checkbox"
+          class="accent-indigo-500"
           :checked="selectedPlatforms.includes(platform)"
           @change="togglePlatform(platform)"
         />
@@ -72,71 +78,20 @@ async function publishNow() {
       </label>
     </div>
 
-    <button :disabled="publishing || videoPaths.length === 0" @click="publishNow">
+    <button
+      :class="btnPrimaryClass"
+      :disabled="publishing || videoPaths.length === 0"
+      @click="publishNow"
+    >
       {{ publishing ? 'Publicando…' : 'Publicar agora' }}
     </button>
 
-    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="text-sm text-rose-400">{{ errorMessage }}</p>
 
-    <ul v-if="results" class="results">
+    <ul v-if="results" class="flex list-none flex-col gap-1 p-0 text-xs">
       <li v-for="(result, index) in results" :key="index">
         {{ result.success ? '✓' : '✗' }} {{ JSON.stringify(result) }}
       </li>
     </ul>
   </div>
 </template>
-
-<style scoped>
-.step-publish {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-width: 32rem;
-}
-
-.hint {
-  color: var(--cockpit-text-muted);
-  font-size: 0.85rem;
-}
-
-.platforms {
-  display: flex;
-  gap: 1rem;
-}
-
-.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.85rem;
-}
-
-button {
-  align-self: flex-start;
-  padding: 0.55rem 1rem;
-  border-radius: 0.4rem;
-  border: none;
-  background: var(--cockpit-accent);
-  color: var(--cockpit-accent-contrast);
-  font-weight: 600;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.error {
-  color: var(--cockpit-danger);
-  font-size: 0.85rem;
-}
-
-.results {
-  list-style: none;
-  padding: 0;
-  font-size: 0.8rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-</style>

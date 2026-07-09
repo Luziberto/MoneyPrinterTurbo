@@ -137,6 +137,49 @@ class TestChannelsEndpoints(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_create_channel(self):
+        response = self.client.post(
+            "/api/v1/channels",
+            json={"slug": "novo", "name": "Novo Canal", "niche": "curiosidades"},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["slug"], "novo")
+        self.assertEqual(data["name"], "Novo Canal")
+
+    def test_create_channel_rejects_duplicate(self):
+        response = self.client.post(
+            "/api/v1/channels",
+            json={"slug": self.slug, "name": "Dup"},
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_update_channel(self):
+        response = self.client.put(
+            f"/api/v1/channels/{self.slug}",
+            json={"name": "Renamed", "videos_per_day": 5},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["name"], "Renamed")
+        self.assertEqual(data["videos_per_day"], 5)
+
+    def test_delete_channel(self):
+        response = self.client.delete(f"/api/v1/channels/{self.slug}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get(f"/api/v1/channels/{self.slug}").status_code, 404)
+
+    def test_upload_channel_avatar(self):
+        response = self.client.post(
+            f"/api/v1/channels/{self.slug}/avatar",
+            files={"file": ("avatar.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("avatar_url", response.json()["data"])
+        avatar = self.client.get(f"/api/v1/channels/{self.slug}/avatar")
+        self.assertEqual(avatar.status_code, 200)
+        self.assertEqual(avatar.headers["content-type"], "image/png")
+
 
 if __name__ == "__main__":
     unittest.main()

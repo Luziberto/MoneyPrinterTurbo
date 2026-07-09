@@ -43,60 +43,36 @@ onUnmounted(stopPolling)
 </script>
 
 <template>
-  <div class="step-result">
-    <h2>Resultado</h2>
+  <div class="flex max-w-96 flex-col gap-4">
+    <h2 class="text-xl font-bold tracking-tight">Resultado</h2>
 
-    <p v-if="!taskId" class="hint">Nenhum render enviado ainda -- volte ao passo Render.</p>
+    <p v-if="!taskId" class="text-sm text-slate-500">
+      Nenhum render enviado ainda — volte ao passo Render.
+    </p>
 
     <template v-else-if="task">
-      <p><strong>Task:</strong> {{ taskId }}</p>
-      <p v-if="!isDone">Processando… {{ task.progress }}%</p>
-      <p v-if="task.state === TASK_STATE_FAILED" class="error">
+      <p class="text-sm"><strong>Task:</strong> {{ taskId }}</p>
+      <p v-if="!isDone" class="text-sm text-slate-400">Processando… {{ task.progress }}%</p>
+      <p v-if="task.state === TASK_STATE_FAILED" class="text-sm text-rose-400">
         Render falhou{{ task.error ? `: ${task.error}` : '' }}
       </p>
 
-      <div v-if="task.state === TASK_STATE_COMPLETE && task.videos?.length" class="result">
-        <video :src="task.videos[0]" controls />
-        <a class="download" :href="task.videos[0]" download>Baixar vídeo</a>
-        <RouterLink class="publish-link" to="/criar/publish">Ir para Publicar →</RouterLink>
+      <div v-if="task.state === TASK_STATE_COMPLETE && task.videos?.length" class="flex flex-col gap-3">
+        <video :src="task.videos[0]" controls class="w-full rounded-lg bg-black" />
+        <a
+          class="font-semibold text-indigo-400 no-underline hover:text-indigo-300"
+          :href="task.videos[0]"
+          download
+        >
+          Baixar vídeo
+        </a>
+        <RouterLink
+          class="font-semibold text-indigo-400 no-underline hover:text-indigo-300"
+          to="/criar/publish"
+        >
+          Ir para Publicar →
+        </RouterLink>
       </div>
     </template>
   </div>
 </template>
-
-<style scoped>
-.step-result {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-width: 24rem;
-}
-
-.hint {
-  color: var(--cockpit-text-muted);
-  font-size: 0.85rem;
-}
-
-.error {
-  color: var(--cockpit-danger);
-}
-
-.result {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-video {
-  width: 100%;
-  border-radius: 0.5rem;
-  background: black;
-}
-
-.download,
-.publish-link {
-  color: var(--cockpit-accent);
-  font-weight: 600;
-  text-decoration: none;
-}
-</style>

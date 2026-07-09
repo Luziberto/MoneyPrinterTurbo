@@ -501,6 +501,25 @@ class ChannelSummary(BaseModel):
     niche: str = ""
     mode: str = "faceless"
     video_source: str = "pexels"
+    avatar_url: Optional[str] = None
+    videos_per_day: int = 1
+
+
+class ChannelCreateBody(BaseModel):
+    slug: str
+    name: str
+    niche: str = ""
+
+
+class ChannelUpdateBody(BaseModel):
+    name: Optional[str] = None
+    niche: Optional[str] = None
+    videos_per_day: Optional[int] = None
+    mode: Optional[str] = None
+    video_source: Optional[str] = None
+    video_aspect: Optional[str] = None
+    target_duration: Optional[str] = None
+    video_language: Optional[str] = None
 
 
 class ChannelConfigResponse(BaseModel):

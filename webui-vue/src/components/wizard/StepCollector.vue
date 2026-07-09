@@ -1,20 +1,22 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { useUiStore } from '../../stores/ui'
 import { collectorApi } from '../../api/collector'
 import { ApiError } from '../../api/client'
+import { btnPrimaryClass, cardClass } from '../../lib/cockpit-ui'
 
 const workspaceStore = useWorkspaceStore()
+const uiStore = useUiStore()
 const fetching = ref(false)
 const errorMessage = ref<string | null>(null)
 const jobStatus = ref<string | null>(null)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 
 const lastJob = computed(() => workspaceStore.workspace?.media.last_collector_job ?? null)
-
-async function onVideoSourceChange(event: Event) {
-  await workspaceStore.patch({ media: { video_source: (event.target as HTMLSelectElement).value } })
-}
+const usesCollector = computed(
+  () => workspaceStore.workspace?.media.video_source === 'collector',
+)
 
 function stopPolling() {
   if (pollTimer) {
@@ -66,96 +68,33 @@ onUnmounted(stopPolling)
 </script>
 
 <template>
-  <div v-if="workspaceStore.workspace" class="step-collector">
-    <h2>Coletor de mídia</h2>
+  <div v-if="workspaceStore.workspace" class="flex max-w-lg flex-col gap-4">
+    <h2 class="text-xl font-bold tracking-tight">Coletor de mídia</h2>
 
-    <label class="field">
-      <span>Fonte de vídeo</span>
-      <select :value="workspaceStore.workspace.media.video_source" @change="onVideoSourceChange">
-        <option value="collector">Collector</option>
-        <option value="pexels">Pexels</option>
-        <option value="pixabay">Pixabay</option>
-        <option value="local">Local</option>
-      </select>
-    </label>
+    <p class="text-sm text-slate-500">
+      {{ uiStore.tr('Cockpit Collector Step Hint') }}
+    </p>
 
-    <template v-if="workspaceStore.workspace.media.video_source === 'collector'">
-      <button :disabled="fetching" @click="fetchClips">
+    <template v-if="usesCollector">
+      <button :class="btnPrimaryClass" :disabled="fetching" @click="fetchClips">
         {{ fetching ? `Buscando… (${jobStatus})` : 'Buscar clipes' }}
       </button>
 
-      <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+      <p v-if="errorMessage" class="text-sm text-rose-400">{{ errorMessage }}</p>
 
-      <div v-if="lastJob" class="job-snapshot">
+      <div v-if="lastJob" :class="[cardClass, 'grid gap-1 text-sm']">
         <div><strong>Status:</strong> {{ lastJob.status }}</div>
         <div><strong>Clipes selecionados:</strong> {{ lastJob.selected_clips_count }}</div>
         <div><strong>Reaproveitados:</strong> {{ lastJob.local_reused }}</div>
         <div><strong>Novos downloads:</strong> {{ lastJob.new_downloads }}</div>
-        <div v-if="lastJob.cache_hit_pct !== null"><strong>Cache hit:</strong> {{ lastJob.cache_hit_pct }}%</div>
+        <div v-if="lastJob.cache_hit_pct !== null">
+          <strong>Cache hit:</strong> {{ lastJob.cache_hit_pct }}%
+        </div>
       </div>
     </template>
-    <p v-else class="hint">
-      Fonte "{{ workspaceStore.workspace.media.video_source }}" não usa o Collector -- os clipes são
-      resolvidos no momento do render.
+    <p v-else class="text-sm text-slate-500">
+      Fonte atual: <strong class="text-slate-300">{{ workspaceStore.workspace.media.video_source }}</strong>.
+      {{ uiStore.tr('Cockpit Collector Step NonCollector') }}
     </p>
   </div>
 </template>
-
-<style scoped>
-.step-collector {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-width: 32rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-  color: var(--cockpit-text-muted);
-}
-
-.field select {
-  padding: 0.5rem 0.6rem;
-  border-radius: 0.4rem;
-  border: 1px solid var(--cockpit-border);
-  background: var(--cockpit-bg);
-  color: var(--cockpit-text);
-}
-
-button {
-  align-self: flex-start;
-  padding: 0.55rem 1rem;
-  border-radius: 0.4rem;
-  border: none;
-  background: var(--cockpit-accent);
-  color: var(--cockpit-accent-contrast);
-  font-weight: 600;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.error {
-  color: var(--cockpit-danger);
-  font-size: 0.85rem;
-}
-
-.hint {
-  color: var(--cockpit-text-muted);
-  font-size: 0.85rem;
-}
-
-.job-snapshot {
-  display: grid;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-  padding: 0.75rem 1rem;
-  background: var(--cockpit-surface-hover);
-  border-radius: 0.5rem;
-}
-</style>

@@ -5,6 +5,7 @@ const STORAGE_KEY = 'mpt-cockpit-locale'
 
 interface State {
   locale: LocaleCode
+  localeLabel: string
   translations: Record<string, string>
   loading: boolean
 }
@@ -17,6 +18,7 @@ function initialLocale(): LocaleCode {
 export const useUiStore = defineStore('ui', {
   state: (): State => ({
     locale: initialLocale(),
+    localeLabel: '',
     translations: {},
     loading: false,
   }),
@@ -25,8 +27,9 @@ export const useUiStore = defineStore('ui', {
     async setLocale(locale: LocaleCode) {
       this.loading = true
       try {
-        const { Translation } = await i18nApi.getLocale(locale)
+        const { Language, Translation } = await i18nApi.getLocale(locale)
         this.locale = locale
+        this.localeLabel = Language
         this.translations = Translation
         localStorage.setItem(STORAGE_KEY, locale)
       } finally {

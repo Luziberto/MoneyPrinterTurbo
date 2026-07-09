@@ -4,11 +4,15 @@ import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { videosApi } from '../../api/videos'
 import { ApiError } from '../../api/client'
+import { btnPrimaryClass } from '../../lib/cockpit-ui'
 
 const workspaceStore = useWorkspaceStore()
 const router = useRouter()
 const submitting = ref(false)
 const errorMessage = ref<string | null>(null)
+
+const btnSecondaryClass =
+  'inline-flex items-center justify-center rounded-lg border border-slate-600/30 bg-slate-800/80 px-4 py-2.5 text-sm font-semibold text-slate-100 transition hover:bg-slate-700 disabled:cursor-default disabled:opacity-55'
 
 async function submitRender(force = false) {
   errorMessage.value = null
@@ -26,67 +30,29 @@ async function submitRender(force = false) {
 </script>
 
 <template>
-  <div v-if="workspaceStore.workspace" class="step-render">
-    <h2>Render</h2>
+  <div v-if="workspaceStore.workspace" class="flex max-w-lg flex-col gap-4">
+    <h2 class="text-xl font-bold tracking-tight">Render</h2>
 
-    <p class="hint">
-      Assunto: <strong>{{ workspaceStore.workspace.script.video_subject || '—' }}</strong> ·
-      {{ workspaceStore.workspace.keywords.terms.length }} palavra(s)-chave ·
-      fonte: {{ workspaceStore.workspace.media.video_source }}
+    <p class="text-sm text-slate-500">
+      Assunto: <strong class="text-slate-200">{{ workspaceStore.workspace.script.video_subject || '—' }}</strong>
+      · {{ workspaceStore.workspace.keywords.terms.length }} palavra(s)-chave · fonte:
+      {{ workspaceStore.workspace.media.video_source }}
     </p>
 
-    <div class="actions">
-      <button :disabled="submitting" @click="submitRender(false)">
+    <div class="flex flex-wrap gap-2.5">
+      <button :class="btnPrimaryClass" :disabled="submitting" @click="submitRender(false)">
         {{ submitting ? 'Enviando…' : 'Renderizar vídeo' }}
       </button>
-      <button v-if="errorMessage" class="secondary" :disabled="submitting" @click="submitRender(true)">
+      <button
+        v-if="errorMessage"
+        :class="btnSecondaryClass"
+        :disabled="submitting"
+        @click="submitRender(true)"
+      >
         Renderizar mesmo assim
       </button>
     </div>
 
-    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="text-sm text-rose-400">{{ errorMessage }}</p>
   </div>
 </template>
-
-<style scoped>
-.step-render {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-width: 32rem;
-}
-
-.hint {
-  color: var(--cockpit-text-muted);
-  font-size: 0.85rem;
-}
-
-.actions {
-  display: flex;
-  gap: 0.6rem;
-}
-
-button {
-  padding: 0.55rem 1rem;
-  border-radius: 0.4rem;
-  border: none;
-  background: var(--cockpit-accent);
-  color: var(--cockpit-accent-contrast);
-  font-weight: 600;
-}
-
-button.secondary {
-  background: var(--cockpit-surface-hover);
-  color: var(--cockpit-text);
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.error {
-  color: var(--cockpit-danger);
-  font-size: 0.85rem;
-}
-</style>

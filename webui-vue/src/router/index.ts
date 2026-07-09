@@ -16,9 +16,11 @@ const router = createRouter({
         }
       },
     },
-    { path: '/canais', name: 'canais', component: () => import('../views/CanaisView.vue') },
+    { path: '/historico', name: 'historico', component: () => import('../views/HistoricoView.vue') },
+    { path: '/topicos', redirect: '/historico' },
+    { path: '/canais', redirect: '/criar/script' },
     { path: '/tarefas', name: 'tarefas', component: () => import('../views/TarefasView.vue') },
-    { path: '/config', name: 'config', component: () => import('../views/ConfigView.vue') },
+    { path: '/config', redirect: '/' },
   ],
 })
 

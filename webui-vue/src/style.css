@@ -1,84 +1,79 @@
-/* Palette matches webui/cockpit.py's COCKPIT_CSS (slate + indigo), so the
-   Vue cockpit reads as a continuation of the same tool, not a redesign. */
-:root {
-  --cockpit-bg: #f8fafc;
-  --cockpit-surface: #ffffff;
-  --cockpit-surface-hover: #f1f5f9;
-  --cockpit-border: #e2e8f0;
-  --cockpit-text: #0f172a;
-  --cockpit-text-muted: #64748b;
-  --cockpit-accent: #6366f1;
-  --cockpit-accent-contrast: #f8fafc;
-  --cockpit-success: #16a34a;
-  --cockpit-danger: #dc2626;
-  --cockpit-warning: #d97706;
+@import 'tailwindcss';
 
-  color-scheme: light dark;
-  font: 15px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+@custom-variant light (&:where([data-theme=light], [data-theme=light] *));
+
+@theme {
+  --color-cockpit-bg: #0b0f17;
+  --color-cockpit-surface: #151b28;
+  --color-cockpit-elevated: #1a2233;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --cockpit-bg: #0f172a;
-    --cockpit-surface: #1e293b;
-    --cockpit-surface-hover: #334155;
-    --cockpit-border: rgba(148, 163, 184, 0.22);
-    --cockpit-text: #f8fafc;
-    --cockpit-text-muted: #94a3b8;
-    --cockpit-accent: #818cf8;
-    --cockpit-accent-contrast: #0f172a;
-    --cockpit-success: #4ade80;
-    --cockpit-danger: #f87171;
-    --cockpit-warning: #fbbf24;
+html[data-theme='light'] {
+  --color-cockpit-bg: #f1f5f9;
+  --color-cockpit-surface: #ffffff;
+  --color-cockpit-elevated: #f8fafc;
+  color-scheme: light;
+}
+
+html[data-theme='dark'],
+html:not([data-theme]) {
+  color-scheme: dark;
+}
+
+@layer base {
+  body {
+    @apply m-0 min-h-screen bg-cockpit-bg font-sans text-[15px] leading-normal text-slate-100 antialiased;
+    @apply light:text-slate-900;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+
+  select,
+  input,
+  textarea {
+    @apply light:text-slate-900;
+  }
+
+  option {
+    @apply bg-cockpit-surface text-slate-100 light:bg-white light:text-slate-900;
   }
 }
 
-:root[data-theme='dark'] {
-  --cockpit-bg: #0f172a;
-  --cockpit-surface: #1e293b;
-  --cockpit-surface-hover: #334155;
-  --cockpit-border: rgba(148, 163, 184, 0.22);
-  --cockpit-text: #f8fafc;
-  --cockpit-text-muted: #94a3b8;
-  --cockpit-accent: #818cf8;
-  --cockpit-accent-contrast: #0f172a;
-  --cockpit-success: #4ade80;
-  --cockpit-danger: #f87171;
-  --cockpit-warning: #fbbf24;
-}
+@layer components {
+  .cockpit-chrome {
+    @apply border-slate-600/20 bg-cockpit-surface/60 text-slate-200;
+    @apply light:border-slate-200 light:bg-white light:text-slate-800;
+  }
 
-:root[data-theme='light'] {
-  --cockpit-bg: #f8fafc;
-  --cockpit-surface: #ffffff;
-  --cockpit-surface-hover: #f1f5f9;
-  --cockpit-border: #e2e8f0;
-  --cockpit-text: #0f172a;
-  --cockpit-text-muted: #64748b;
-  --cockpit-accent: #6366f1;
-  --cockpit-accent-contrast: #f8fafc;
-  --cockpit-success: #16a34a;
-  --cockpit-danger: #dc2626;
-  --cockpit-warning: #d97706;
-}
+  .cockpit-chrome-hover {
+    @apply hover:border-slate-500/40 hover:bg-slate-800 hover:text-white;
+    @apply light:hover:border-slate-300 light:hover:bg-slate-100 light:hover:text-slate-900;
+  }
 
-* {
-  box-sizing: border-box;
-}
+  .cockpit-panel {
+    @apply rounded-xl border border-slate-600/20 bg-cockpit-surface/75;
+    @apply light:border-slate-200 light:bg-white light:shadow-sm light:shadow-slate-200/60;
+  }
 
-body {
-  margin: 0;
-  color: var(--cockpit-text);
-  background: var(--cockpit-bg);
-}
+  .cockpit-heading {
+    @apply text-slate-50 light:text-slate-900;
+  }
 
-input,
-select,
-textarea,
-button {
-  font: inherit;
-  color: inherit;
-}
+  .cockpit-title {
+    @apply text-slate-100 light:text-slate-900;
+  }
 
-button {
-  cursor: pointer;
+  .cockpit-muted {
+    @apply text-slate-500 light:text-slate-600;
+  }
+
+  .cockpit-subtle {
+    @apply text-slate-400 light:text-slate-600;
+  }
+
+  .cockpit-divider {
+    @apply bg-slate-600/30 light:bg-slate-200;
+  }
 }

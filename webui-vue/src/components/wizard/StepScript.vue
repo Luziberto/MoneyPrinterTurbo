@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { llmApi } from '../../api/llm'
 import { ApiError } from '../../api/client'
+import { btnPrimaryClass, inputClass, labelClass, selectClass } from '../../lib/cockpit-ui'
+import TopicsQueuePanel from './TopicsQueuePanel.vue'
 
 const workspaceStore = useWorkspaceStore()
 const generatingScript = ref(false)
@@ -83,33 +85,43 @@ async function generateTerms() {
 </script>
 
 <template>
-  <div v-if="workspaceStore.workspace" class="step-script">
-    <h2>Roteiro</h2>
+  <div
+    v-if="workspaceStore.workspace"
+    class="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_38rem]"
+  >
+    <div class="flex min-w-0 flex-col gap-4">
+      <h2 class="text-[1.65rem] font-bold tracking-tight">Roteiro</h2>
 
-    <label class="field">
-      <span>Assunto</span>
+      <label class="flex flex-col gap-1.5">
+      <span :class="labelClass">Assunto</span>
       <input
         type="text"
+        :class="inputClass"
         :value="workspaceStore.workspace.script.video_subject"
-        @change="onSubjectChange"
         placeholder="Sobre o que é o vídeo?"
+        @change="onSubjectChange"
       />
     </label>
 
-    <div class="field-row">
-      <label class="field">
-        <span>Parágrafos</span>
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <label class="flex flex-col gap-1.5">
+        <span :class="labelClass">Parágrafos</span>
         <input
           type="number"
           min="1"
           max="10"
+          :class="inputClass"
           :value="workspaceStore.workspace.script.paragraph_number"
           @change="onParagraphChange"
         />
       </label>
-      <label class="field">
-        <span>Modo</span>
-        <select :value="workspaceStore.workspace.script.script_mode" @change="onScriptModeChange">
+      <label class="flex flex-col gap-1.5">
+        <span :class="labelClass">Modo</span>
+        <select
+          :class="selectClass"
+          :value="workspaceStore.workspace.script.script_mode"
+          @change="onScriptModeChange"
+        >
           <option value="auto">Automático</option>
           <option value="verbatim">Verbatim</option>
           <option value="polish">Polir</option>
@@ -117,111 +129,43 @@ async function generateTerms() {
       </label>
     </div>
 
-    <label class="field">
-      <span>Roteiro</span>
+    <label class="flex flex-col gap-1.5">
+      <span :class="labelClass">Roteiro</span>
       <textarea
         rows="8"
+        :class="[inputClass, 'resize-y']"
         :value="workspaceStore.workspace.script.video_script"
-        @change="onScriptChange"
         placeholder="Deixe em branco para gerar automaticamente"
+        @change="onScriptChange"
       />
     </label>
 
-    <div class="actions">
-      <button :disabled="generatingScript" @click="generateScript">
+    <div class="mt-1 flex flex-wrap gap-2.5">
+      <button :class="btnPrimaryClass" :disabled="generatingScript" @click="generateScript">
         {{ generatingScript ? 'Gerando…' : 'Gerar roteiro' }}
       </button>
-      <button :disabled="generatingTerms" @click="generateTerms">
+      <button :class="btnPrimaryClass" :disabled="generatingTerms" @click="generateTerms">
         {{ generatingTerms ? 'Gerando…' : 'Gerar palavras-chave' }}
       </button>
     </div>
 
-    <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="text-sm text-rose-400">{{ errorMessage }}</p>
 
-    <div v-if="workspaceStore.workspace.keywords.terms.length > 0" class="keywords">
-      <h3>Palavras-chave</h3>
-      <ul>
-        <li v-for="term in workspaceStore.workspace.keywords.terms" :key="term.term">
-          {{ term.term }} <span class="keywords__weight">({{ term.weight.toFixed(2) }})</span>
+    <div v-if="workspaceStore.workspace.keywords.terms.length > 0">
+      <h3 class="mb-2 text-sm font-semibold text-slate-400">Palavras-chave</h3>
+      <ul class="flex flex-wrap gap-1.5 p-0 list-none">
+        <li
+          v-for="term in workspaceStore.workspace.keywords.terms"
+          :key="term.term"
+          class="rounded-full bg-slate-800/80 px-2.5 py-1 text-xs"
+        >
+          {{ term.term }}
+          <span class="text-slate-500">({{ term.weight.toFixed(2) }})</span>
         </li>
       </ul>
     </div>
+    </div>
+
+    <TopicsQueuePanel class="hidden w-full self-start xl:flex" />
   </div>
 </template>
-
-<style scoped>
-.step-script {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  max-width: 40rem;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-  color: var(--cockpit-text-muted);
-}
-
-.field input,
-.field select,
-.field textarea {
-  padding: 0.5rem 0.6rem;
-  border-radius: 0.4rem;
-  border: 1px solid var(--cockpit-border);
-  background: var(--cockpit-bg);
-  color: var(--cockpit-text);
-  font-family: inherit;
-  resize: vertical;
-}
-
-.field-row {
-  display: flex;
-  gap: 1rem;
-}
-
-.actions {
-  display: flex;
-  gap: 0.6rem;
-}
-
-.actions button {
-  padding: 0.55rem 1rem;
-  border-radius: 0.4rem;
-  border: none;
-  background: var(--cockpit-accent);
-  color: var(--cockpit-accent-contrast);
-  font-weight: 600;
-}
-
-.actions button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.error {
-  color: var(--cockpit-danger);
-  font-size: 0.85rem;
-}
-
-.keywords ul {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.keywords li {
-  padding: 0.25rem 0.6rem;
-  border-radius: 999px;
-  background: var(--cockpit-surface-hover);
-  font-size: 0.8rem;
-}
-
-.keywords__weight {
-  color: var(--cockpit-text-muted);
-}
-</style>

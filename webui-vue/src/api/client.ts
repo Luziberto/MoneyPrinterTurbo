@@ -73,4 +73,25 @@ export const api = {
     request<T>('PUT', path, { json: json ?? {}, params }),
   delete: <T>(path: string, params?: Record<string, string | number | boolean | undefined>) =>
     request<T>('DELETE', path, { params }),
+  upload: async <T>(path: string, formData: FormData): Promise<T> => {
+    const response = await fetch(path, { method: 'POST', body: formData })
+    let body: unknown = null
+    const text = await response.text()
+    if (text) {
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = text
+      }
+    }
+    if (!response.ok) {
+      let message = `POST ${path} failed: ${response.status}`
+      if (body && typeof body === 'object' && 'message' in body) {
+        message = String((body as Envelope<unknown>).message)
+      }
+      throw new ApiError(response.status, message, body)
+    }
+    const envelope = body as Envelope<T>
+    return envelope && typeof envelope === 'object' && 'data' in envelope ? envelope.data : (body as T)
+  },
 }
