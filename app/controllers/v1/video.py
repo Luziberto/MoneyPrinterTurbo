@@ -116,7 +116,7 @@ def _task_file_to_uri(file: str, endpoint: str, task_dir: str, request_id: str) 
 def create_video(
     background_tasks: BackgroundTasks, request: Request, body: TaskVideoRequest
 ):
-    return create_task(request, body, stop_at="video")
+    return create_task(request, body, stop_at="video", source="api")
 
 
 @router.post("/subtitle", response_model=TaskResponse, summary="Generate subtitle only")
@@ -133,10 +133,34 @@ def create_audio(
     return create_task(request, body, stop_at="audio")
 
 
+def _create_video_library_row(task_id: str, body: TaskVideoRequest, source: str) -> None:
+    """Create the Video Library row at render submission (not completion), so
+    a `rendering` video is visible in the library immediately. Both pipeline's
+    POST /videos and the cockpit's POST /cockpit/render go through create_task,
+    so both trigger sources create library entries -- see
+    app/services/video_library_store.py / video_library_transitions.py.
+    """
+    from app.config import config as app_config
+    from app.services.video_library_store import VideoLibraryStore
+
+    try:
+        VideoLibraryStore().create_video(
+            id=task_id,
+            channel_slug=body.channel_slug or "_unassigned",
+            title=body.video_subject or "",
+            subject=body.video_subject or "",
+            source=source,
+            pipeline_version=f"{app_config.project_name} {app_config.project_version}",
+        )
+    except Exception as exc:  # noqa: BLE001 - must never block task creation
+        logger.warning(f"failed to create video-library row for task {task_id}: {exc}")
+
+
 def create_task(
     request: Request,
     body: Union[TaskVideoRequest, SubtitleRequest, AudioRequest],
     stop_at: str,
+    source: str = "api",
 ):
     task_id = utils.get_uuid()
     request_id = base.get_task_id(request)
@@ -150,7 +174,11 @@ def create_task(
         logger.warning(f"SUBJECT={body.video_subject}")
         logger.warning(f"VIDEO_TERMS={body.video_terms}")
         logger.warning(f"VIDEO_SCRIPT={body.video_script[:100]}")
-        task_manager.add_task(tm.start_with_lock, task_id=task_id, params=body, stop_at=stop_at)
+        if stop_at == "video":
+            task_manager.add_task(tm.start_and_track_library, task_id=task_id, params=body, stop_at=stop_at)
+            _create_video_library_row(task_id, body, source)
+        else:
+            task_manager.add_task(tm.start_with_lock, task_id=task_id, params=body, stop_at=stop_at)
         logger.success(f"Task created: {utils.to_json(task)}")
         return utils.get_response(200, task)
     except TaskQueueFullError as e:

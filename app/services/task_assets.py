@@ -1,0 +1,72 @@
+"""Filename-agnostic asset discovery for a render task's output directory.
+
+Every other module that needs "the thumbnail path" or "the final video path"
+goes through this, instead of hardcoding filenames inline -- this is the one
+place on-disk naming conventions are known, so a future rename (e.g.
+audio.mp3 -> audio.wav, or subtitles moving into a subfolder) is a one-file
+change instead of an API-wide one.
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+from app.config import config
+from app.utils import utils
+
+# kind -> glob patterns tried in order, relative to the task directory.
+_ASSET_PATTERNS: dict[str, tuple[str, ...]] = {
+    "video": ("final-*.mp4",),
+    "thumbnail": ("*thumbnail*.jpg", "*thumbnail*.jpeg", "*thumbnail*.png", "*thumbnail*.webp"),
+    "audio": ("audio.*",),
+    "subtitle": ("subtitle.*", "subtitles/*"),
+    "script": ("script.json",),
+}
+
+
+@dataclass
+class TaskAsset:
+    kind: str
+    name: str
+    size_bytes: int
+    url: str
+
+
+def _task_file_url(task_id: str, filename: str) -> str:
+    endpoint = str(config.app.get("endpoint", "") or "").rstrip("/")
+    path = f"tasks/{task_id}/{filename}"
+    return f"{endpoint}/{path}" if endpoint else f"/{path}"
+
+
+def find(task_id: str, kind: str) -> Optional[TaskAsset]:
+    """Return the first asset of `kind` that actually exists on disk, or None."""
+    patterns = _ASSET_PATTERNS.get(kind)
+    if not patterns:
+        return None
+
+    base_dir = utils.task_dir(task_id)
+    for pattern in patterns:
+        matches = sorted(glob.glob(os.path.join(base_dir, pattern)))
+        for match in matches:
+            if os.path.isfile(match):
+                filename = os.path.relpath(match, base_dir).replace(os.sep, "/")
+                return TaskAsset(
+                    kind=kind,
+                    name=filename,
+                    size_bytes=os.path.getsize(match),
+                    url=_task_file_url(task_id, filename),
+                )
+    return None
+
+
+def list_assets(task_id: str) -> list[TaskAsset]:
+    """Every produced asset for a task that currently exists on disk."""
+    assets = []
+    for kind in _ASSET_PATTERNS:
+        asset = find(task_id, kind)
+        if asset:
+            assets.append(asset)
+    return assets

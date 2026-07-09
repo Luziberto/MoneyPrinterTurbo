@@ -249,7 +249,7 @@ def render_from_workspace(
     # Delegates to the same create_task/task_manager machinery pipeline's
     # POST /videos uses -- start_with_lock (see app/services/task.py) is what
     # actually makes the two share the single-flight generation lock.
-    response = video.create_task(request, task_request, stop_at="video")
+    response = video.create_task(request, task_request, stop_at="video", source="cockpit")
 
     task_id = response.get("data", {}).get("task_id")
     if task_id:

@@ -1,5 +1,6 @@
 import math
 import os.path
+import time
 from os import path
 
 from loguru import logger
@@ -335,16 +336,38 @@ def generate_final_videos(
     return final_video_paths, combined_video_paths
 
 
+def _stage_timer(task_id: str, stop_at: str):
+    """Yields a callable that records a video_events stage_completed row when
+    stop_at == "video" (i.e. only for tasks that actually got a Video Library
+    row created in app/controllers/v1/video.py::create_task -- recording
+    stage timing for a script/terms/audio-only task would leave a dangling
+    event pointing at a video row that was never created).
+    """
+    stage_start = time.monotonic()
+
+    def _mark(stage: str) -> None:
+        nonlocal stage_start
+        if stop_at == "video":
+            from app.services.video_library_transitions import record_stage_event
+
+            record_stage_event(task_id, stage, stage_start)
+        stage_start = time.monotonic()
+
+    return _mark
+
+
 def start(task_id, params: VideoParams, stop_at: str = "video"):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
     params.n_threads = cap_thread_count(params.n_threads)
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
+    _mark_stage = _stage_timer(task_id, stop_at)
 
     # 1. Generate script
     video_script = generate_script(task_id, params)
     if not video_script or "Error: " in video_script:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
         return
+    _mark_stage("script")
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=10)
 
@@ -363,6 +386,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
             return
 
     save_script_data(task_id, video_script, video_terms, params)
+    _mark_stage("terms")
 
     if stop_at == "terms":
         sm.state.update_task(
@@ -381,6 +405,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         return
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=30)
+    _mark_stage("tts")
 
     if stop_at == "audio":
         sm.state.update_task(
@@ -414,6 +439,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
     if not downloaded_videos:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
         return
+    _mark_stage("collector")
 
     if stop_at == "materials":
         sm.state.update_task(
@@ -439,6 +465,11 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
     if not final_video_paths:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
         return
+    _mark_stage("render")
+
+    thumbnail_path, video_duration_seconds, video_file_size_bytes = _extract_thumbnail_and_stats(
+        task_id, final_video_paths[0]
+    )
 
     logger.success(
         f"task {task_id} finished, generated {len(final_video_paths)} videos."
@@ -453,6 +484,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         language=params.video_language or "",
         publish_platforms=publish_platforms,
     )
+    _mark_stage("upload")
 
     kwargs = {
         "videos": final_video_paths,
@@ -464,11 +496,41 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         "subtitle_path": subtitle_path,
         "materials": _serialize_materials_for_state(downloaded_videos),
         "cross_post_results": cross_post_results if cross_post_results else None,
+        "thumbnail_path": thumbnail_path,
+        "video_duration_seconds": video_duration_seconds,
+        "video_file_size_bytes": video_file_size_bytes,
     }
     sm.state.update_task(
         task_id, state=const.TASK_STATE_COMPLETE, progress=100, **kwargs
     )
     return kwargs
+
+
+def _extract_thumbnail_and_stats(task_id: str, video_path: str):
+    """Best-effort thumbnail + duration/size capture for the Video Library.
+    Never raises -- a failure here must not fail an otherwise-successful render.
+    """
+    from app.services import thumbnail as thumbnail_service
+
+    thumb_path = path.join(utils.task_dir(task_id), "final-1-thumbnail.jpg")
+    thumbnail_ok = thumbnail_service.extract_thumbnail(video_path, thumb_path)
+
+    file_size_bytes = None
+    try:
+        file_size_bytes = os.path.getsize(video_path)
+    except OSError as exc:
+        logger.warning(f"failed to stat final video for {task_id}: {exc}")
+
+    duration_seconds = None
+    try:
+        from moviepy import VideoFileClip
+
+        with VideoFileClip(video_path) as clip:
+            duration_seconds = clip.duration
+    except Exception as exc:  # noqa: BLE001 - best-effort, must not fail the render
+        logger.warning(f"failed to read video duration for {task_id}: {exc}")
+
+    return (thumb_path if thumbnail_ok else None), duration_seconds, file_size_bytes
 
 
 def start_with_lock(task_id, params: VideoParams, stop_at: str = "video"):
@@ -503,6 +565,56 @@ def start_with_lock(task_id, params: VideoParams, stop_at: str = "video"):
             error=f"Another generation is already running (task {exc})",
         )
         return None
+
+
+def start_and_track_library(task_id, params: VideoParams, stop_at: str = "video"):
+    """Wraps start_with_lock() and syncs the Video Library row (created at
+    submission by app/controllers/v1/video.py::create_task) to the task's
+    final state. Runs strictly after start_with_lock() returns, so the
+    single-flight lock behavior is completely unaffected by this.
+
+    Only used for stop_at == "video" (see create_task) -- /subtitle and
+    /audio keep calling start_with_lock directly, since no library row
+    exists for those.
+    """
+    try:
+        return start_with_lock(task_id=task_id, params=params, stop_at=stop_at)
+    finally:
+        _sync_video_library_from_task_state(task_id)
+
+
+def _sync_video_library_from_task_state(task_id: str) -> None:
+    try:
+        from app.services.video_library_store import VideoLibraryStore
+        from app.services.video_library_transitions import mark_failed, mark_ready
+
+        task = sm.state.get_task(task_id)
+        if not task:
+            return
+
+        store = VideoLibraryStore()
+        if not store.get_video(task_id):
+            return
+
+        state = task.get("state")
+        if state == const.TASK_STATE_COMPLETE:
+            # `terms` is normally list[dict] (see generate_terms()) but can be
+            # a raw error string in a pre-existing upstream edge case -- guard
+            # so the library's `keywords` column never gets a non-list value.
+            terms = task.get("terms")
+            mark_ready(
+                store,
+                task_id,
+                thumbnail_path=task.get("thumbnail_path"),
+                video_path=(task.get("videos") or [None])[0],
+                duration_seconds=task.get("video_duration_seconds"),
+                file_size_bytes=task.get("video_file_size_bytes"),
+                keywords=terms if isinstance(terms, list) else None,
+            )
+        elif state == const.TASK_STATE_FAILED:
+            mark_failed(store, task_id, error=task.get("error"))
+    except Exception as exc:  # noqa: BLE001 - must never mask the render's own result
+        logger.warning(f"failed to sync video-library row for task {task_id}: {exc}")
 
 
 if __name__ == "__main__":

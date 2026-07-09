@@ -75,7 +75,7 @@ class TestCockpitRenderEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_add_task.assert_called_once()
         called_func = mock_add_task.call_args[0][0]
-        self.assertEqual(called_func.__name__, "start_with_lock")
+        self.assertEqual(called_func.__name__, "start_and_track_library")
 
         task_id = response.json()["data"]["task_id"]
         self.assertTrue(task_id)
