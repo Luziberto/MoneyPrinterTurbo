@@ -35,13 +35,16 @@ from app.services.runtime_limits import (
 )
 from app.utils import utils
 from webui import cockpit as _cockpit_module
+from webui import cockpit_keywords
 from webui.cockpit_inspector import InspectorCallbacks
 
 import importlib
 
-# Streamlit keeps module objects across reruns; reload so UI changes apply without
-# restarting the server (and recover from a partially stale cockpit import).
-cockpit = importlib.reload(_cockpit_module)
+# Reload only when explicitly developing UI (avoids re-importing cockpit on every keystroke).
+if os.environ.get("COCKPIT_HOT_RELOAD", "").lower() in ("1", "true", "yes"):
+    cockpit = importlib.reload(_cockpit_module)
+else:
+    cockpit = _cockpit_module
 
 
 def _format_generated_terms(terms: NormalizedCollectorKeywords | str) -> str:
@@ -158,6 +161,8 @@ if "video_script" not in st.session_state:
     st.session_state["video_script"] = ""
 if "video_terms" not in st.session_state:
     st.session_state["video_terms"] = ""
+if "video_terms_keywords" not in st.session_state:
+    st.session_state["video_terms_keywords"] = []
 if "video_script_prompt" not in st.session_state:
     st.session_state["video_script_prompt"] = ""
 if "custom_system_prompt" not in st.session_state:
@@ -359,6 +364,23 @@ def get_groq_model_ids(api_key: str, base_url: str) -> list[str]:
 
 _available_channels = cockpit.list_available_channels()
 _active_channel_slug = cockpit.render_channel_toolbar(_available_channels, tr)
+
+_global_runtime: dict = {}
+if _active_channel_slug:
+    try:
+        _global_runtime = st.session_state.get("channel_runtime") or cockpit.build_runtime_config(
+            _active_channel_slug
+        )
+    except FileNotFoundError:
+        _global_runtime = {}
+
+_global_video_source = str(
+    _global_runtime.get("video_source")
+    or config.ui.get("video_source", config.app.get("video_source", "collector"))
+    or "collector"
+)
+_global_voice = str(_global_runtime.get("voice_name") or config.ui.get("voice_name", "") or "")
+cockpit.render_production_summary(_global_runtime, _global_video_source, _global_voice, tr)
 
 tab_create, tab_channels, tab_tasks, tab_config = st.tabs(
     [
@@ -995,10 +1017,12 @@ with tab_create:
     if active_slug:
         try:
             active_channel_config = cockpit.load_channel_config(active_slug)
+            st.session_state["active_channel_config"] = active_channel_config
             if not channel_runtime:
                 channel_runtime = cockpit.build_runtime_config(active_slug)
         except FileNotFoundError:
             active_channel_config = {}
+            st.session_state["active_channel_config"] = {}
             channel_runtime = {}
 
     video_source = str(
@@ -1008,9 +1032,7 @@ with tab_create:
         )
         or "collector"
     )
-    cockpit.render_ops_bar(tr, video_source)
-    cockpit.render_pipeline_nav(tr)
-    cockpit.render_production_summary(channel_runtime, tr)
+    nav_slot = st.container()
 
     main_col, sidebar_col = st.columns([13, 7])
     main_panel = main_col
@@ -1034,38 +1056,81 @@ with tab_create:
         llm_max_system_prompt=llm.MAX_SCRIPT_SYSTEM_PROMPT_LENGTH,
     )
 
-    def _render_idea_editor() -> None:
-        cockpit.render_document_stage(tr("Cockpit Step Idea"))
-        params.video_subject = st.text_input(
+    cockpit.sync_params_from_ui(params)
+    if cockpit.process_script_generation_triggers(params, tr):
+        st.rerun()
+
+    def _render_script_editor() -> None:
+        cockpit.render_document_stage(tr("Cockpit Step Script"))
+
+        cockpit.render_document_content_section(tr("Cockpit Field Subject"))
+        subject = st.text_input(
             tr("Video Subject"),
-            key="video_subject",
+            value=str(st.session_state.get("video_subject", "") or ""),
             label_visibility="collapsed",
-            placeholder=tr("Video Subject"),
+            placeholder=tr("Cockpit Field Subject Placeholder"),
         ).strip()
+        st.session_state["video_subject"] = subject
+        params.video_subject = subject
 
         cockpit.render_document_divider()
-        cockpit.render_document_section_label(tr("Script Language"))
+        cockpit.render_document_content_section(tr("Cockpit Field Language"))
         video_languages = [(tr("Auto Detect"), "")]
         for code in support_locales:
             video_languages.append((code, code))
 
+        saved_lang = str(
+            params.video_language
+            or config.ui.get("video_language", "")
+            or active_channel_config.get("video_language", "")
+            or ""
+        )
+        lang_index = 0
+        for idx, (_, code) in enumerate(video_languages):
+            if code == saved_lang:
+                lang_index = idx
+                break
+
         selected_index = st.selectbox(
             tr("Script Language"),
-            index=0,
+            index=lang_index,
             options=range(len(video_languages)),
             format_func=lambda x: video_languages[x][0],
             label_visibility="collapsed",
         )
         params.video_language = video_languages[selected_index][1]
+        config.ui["video_language"] = params.video_language
 
-    def _render_script_editor() -> None:
-        cockpit.render_document_stage(tr("Cockpit Step Script"))
-        params.video_script = st.text_area(
+        cockpit.render_document_divider()
+        st.markdown('<div class="cockpit-script-actions">', unsafe_allow_html=True)
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button(
+                tr("Cockpit Generate Script"),
+                type="primary",
+                use_container_width=True,
+                key="workspace_gen_script",
+            ):
+                st.session_state["cockpit_trigger_generate_script"] = True
+                st.rerun()
+        with action_cols[1]:
+            if st.button(
+                tr("Cockpit Generate Keywords"),
+                use_container_width=True,
+                key="workspace_gen_keywords",
+            ):
+                st.session_state["cockpit_trigger_generate_keywords"] = True
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        cockpit.render_document_content_section(tr("Cockpit Script Section"))
+        script = st.text_area(
             tr("Video Script"),
-            value=st.session_state["video_script"],
-            height=420,
+            value=st.session_state.get("video_script", ""),
+            height=280,
             label_visibility="collapsed",
         )
+        params.video_script = cockpit.persist_cockpit_textarea("video_script", script)
         cockpit.render_scene_breakdown(
             params.video_script,
             active_channel_config.get("scene_structure"),
@@ -1073,65 +1138,14 @@ with tab_create:
         )
 
         cockpit.render_document_divider()
-        cockpit.render_document_section_label(tr("Title Overlay Enabled"))
-        title_enabled = st.checkbox(
-            tr("Title Overlay Enabled"),
-            value=st.session_state.get(
-                "title_enabled",
-                active_channel_config.get("title_enabled", False),
-            ),
-            key="title_enabled",
-            label_visibility="collapsed",
+        cockpit.render_document_content_section(
+            tr("Cockpit Keywords Section"),
+            hint=tr("Cockpit Keywords Hint"),
         )
-        cockpit.assign_model_fields(params, title_enabled=title_enabled)
-        if title_enabled:
-            title_text = st.text_input(
-                tr("Title Overlay Text"),
-                value=st.session_state.get(
-                    "title_text",
-                    active_channel_config.get("title_text", params.video_subject),
-                ),
-                key="title_text",
-            ).strip()
-            title_duration = st.slider(
-                tr("Title Overlay Duration"),
-                min_value=1.0,
-                max_value=8.0,
-                value=float(
-                    st.session_state.get(
-                        "title_duration",
-                        active_channel_config.get("title_duration", 3.0),
-                    )
-                ),
-                step=0.5,
-                key="title_duration",
-            )
-            cockpit.assign_model_fields(
-                params,
-                title_text=title_text,
-                title_duration=title_duration,
-            )
-        else:
-            cockpit.assign_model_fields(params, title_text="")
-
-        cockpit.render_document_divider()
-        cockpit.render_document_section_label(tr("Video Keywords"))
-        st.markdown('<div class="cockpit-btn-important">', unsafe_allow_html=True)
-        btn_cols = st.columns(2)
-        with btn_cols[0]:
-            if st.button(tr("Cockpit Generate Script"), key="auto_generate_script"):
-                st.session_state["cockpit_trigger_generate_script"] = True
-        with btn_cols[1]:
-            if st.button(tr("Cockpit Generate Keywords"), key="auto_generate_terms"):
-                st.session_state["cockpit_trigger_generate_keywords"] = True
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        params.video_terms = st.text_area(
-            tr("Video Keywords"),
-            value=st.session_state["video_terms"],
-            label_visibility="collapsed",
-            height=120,
-        )
+        normalized_terms = cockpit_keywords.render_keywords_editor(tr)
+        params.video_terms = [
+            keyword.model_dump() for keyword in normalized_terms.keywords
+        ]
 
     def _render_collector_editor() -> None:
         if cockpit.render_collector_panel(params, tr):
@@ -1154,13 +1168,20 @@ with tab_create:
     def _render_result_editor() -> None:
         cockpit.render_result_editor(tr, open_folder_cb=open_task_folder)
 
+    def _render_publish_editor() -> None:
+        st.session_state["_cockpit_publish_btn"] = cockpit.render_publish_editor(
+            params,
+            active_channel_config,
+            tr,
+        )
+
     step_renderers = {
-        0: _render_idea_editor,
-        1: _render_script_editor,
-        2: _render_collector_editor,
-        3: _render_preview_editor,
-        4: _render_render_editor,
-        5: _render_result_editor,
+        0: _render_script_editor,
+        1: _render_collector_editor,
+        2: _render_preview_editor,
+        3: _render_render_editor,
+        4: _render_result_editor,
+        5: _render_publish_editor,
     }
 
     with main_panel:
@@ -1168,9 +1189,13 @@ with tab_create:
         step_renderers[active_step]()
         st.markdown("</div>", unsafe_allow_html=True)
 
+    with nav_slot:
+        cockpit.render_pipeline_nav(tr)
+
     preview_button = bool(st.session_state.pop("_cockpit_preview_btn", False))
     include_preview_audio = bool(st.session_state.pop("_cockpit_preview_audio", False))
     full_button = bool(st.session_state.pop("_cockpit_full_btn", False))
+    publish_button = bool(st.session_state.pop("_cockpit_publish_btn", False))
     skip_preview = bool(st.session_state.get("cockpit_skip_preview", False))
 
     with side_panel:
@@ -1193,82 +1218,6 @@ with tab_create:
     cockpit.sync_params_from_ui(params)
     video_source = params.video_source or video_source
 
-    if st.session_state.pop("cockpit_trigger_generate_script", False):
-        with st.spinner(tr("Generating Video Script and Keywords")):
-            current_script_mode = st.session_state.get("script_mode", "auto")
-            if current_script_mode == "polish":
-                if not params.video_script.strip():
-                    st.error(tr("Script Mode Polish Brief Required"))
-                else:
-                    script = llm.polish_script(
-                        brief=params.video_script.strip(),
-                        video_subject=params.video_subject,
-                        duration_seconds=max(30, params.paragraph_number * 25),
-                        language=params.video_language or "",
-                    )
-                    terms = llm.generate_terms(
-                        params.video_subject,
-                        script,
-                        amount=8 if params.match_materials_to_script else 5,
-                        match_script_order=params.match_materials_to_script,
-                    )
-                    if _is_terms_error(terms):
-                        st.error(tr(terms))
-                    else:
-                        st.session_state["video_script"] = script
-                        st.session_state["video_terms"] = _format_generated_terms(terms)
-                        st.session_state["cockpit_active_step"] = 1
-            elif current_script_mode == "verbatim" and params.video_script.strip():
-                script = params.video_script.strip()
-                terms = llm.generate_terms(
-                    params.video_subject,
-                    script,
-                    amount=8 if params.match_materials_to_script else 5,
-                    match_script_order=params.match_materials_to_script,
-                )
-                if _is_terms_error(terms):
-                    st.error(tr(terms))
-                else:
-                    st.session_state["video_terms"] = _format_generated_terms(terms)
-            else:
-                script = llm.generate_script(
-                    video_subject=params.video_subject,
-                    language=params.video_language,
-                    paragraph_number=params.paragraph_number,
-                    video_script_prompt=params.video_script_prompt,
-                    custom_system_prompt=params.custom_system_prompt,
-                )
-                terms = llm.generate_terms(
-                    params.video_subject,
-                    script,
-                    amount=8 if params.match_materials_to_script else 5,
-                    match_script_order=params.match_materials_to_script,
-                )
-                if "Error: " in script:
-                    st.error(tr(script))
-                elif _is_terms_error(terms):
-                    st.error(tr(terms))
-                else:
-                    st.session_state["video_script"] = script
-                    st.session_state["video_terms"] = _format_generated_terms(terms)
-                    st.session_state["cockpit_active_step"] = 1
-
-    if st.session_state.pop("cockpit_trigger_generate_keywords", False):
-        if not params.video_script:
-            st.error(tr("Please Enter the Video Subject"))
-        else:
-            with st.spinner(tr("Generating Video Keywords")):
-                terms = llm.generate_terms(
-                    params.video_subject,
-                    params.video_script,
-                    amount=8 if params.match_materials_to_script else 5,
-                    match_script_order=params.match_materials_to_script,
-                )
-                if _is_terms_error(terms):
-                    st.error(tr(terms))
-                else:
-                    st.session_state["video_terms"] = _format_generated_terms(terms)
-
     st.divider()
     render_blockers = cockpit.list_render_blockers(
         params.video_source,
@@ -1285,17 +1234,18 @@ with tab_create:
         st.error(
             f"{tr('Cockpit Generation Locked')}: `{active_lock.get('task_id', 'unknown')}`"
         )
-    cockpit.render_provider_center(
-        params.video_source,
-        params.voice_name,
-        tr,
-    )
 
     if preview_button:
         config.save_config()
         preview_task_id = str(uuid4())
         st.session_state["last_preview_task_id"] = preview_task_id
         cockpit.run_preview(params, include_preview_audio, tr, root_dir)
+        scroll_to_bottom()
+
+    if publish_button:
+        config.save_config()
+        if cockpit.run_cockpit_publish(params, active_channel_config, tr):
+            st.session_state["cockpit_active_step"] = 5
         scroll_to_bottom()
 
     if full_button:
@@ -1422,7 +1372,10 @@ with tab_create:
         cockpit.render_bgm_audit_warning(task_id, params.bgm_type or "", tr)
         st.session_state["preview_ready"] = False
         st.session_state["last_render_task_id"] = task_id
-        st.session_state["cockpit_active_step"] = 5
+        st.session_state["cockpit_publish_done"] = False
+        st.session_state["cockpit_active_step"] = 4
+        if cockpit.maybe_auto_publish_after_render(params, active_channel_config, tr):
+            st.session_state["cockpit_active_step"] = 5
         try:
             if video_files:
                 player_cols = st.columns(len(video_files) * 2 + 1)

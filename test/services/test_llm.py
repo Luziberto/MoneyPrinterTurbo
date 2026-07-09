@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -108,9 +109,73 @@ class TestScriptPromptOptions(unittest.TestCase):
     def test_generate_terms_can_request_script_ordered_keywords(self):
         """
         按文案顺序匹配素材依赖 LLM 返回有序关键词。这里不调用真实模型，
-        只验证服务层会把“按脚本叙事顺序输出”的约束写入 prompt，避免
+        只验证服务层会把"按脚本叙事顺序输出"的约束写入 prompt，避免
         后续素材下载虽然顺序化，但关键词仍然是全局无序主题词。
+
+        Default mode is visual_package: the response now carries visual_intent /
+        alternatives / required_concepts / optional_concepts per item.
         """
+        captured = {}
+
+        def fake_generate_response(prompt):
+            captured["prompt"] = prompt
+            return json.dumps(
+                [
+                    {
+                        "term": "opening city",
+                        "weight": 1.0,
+                        "visual_intent": "Abre com a cidade para situar o espectador.",
+                        "alternatives": ["city skyline", "urban opening shot"],
+                        "required_concepts": ["city"],
+                        "optional_concepts": ["skyline"],
+                    },
+                    {
+                        "term": "middle office",
+                        "weight": 0.85,
+                        "visual_intent": "Mostra o escritório no meio da narrativa.",
+                        "alternatives": ["office interior"],
+                        "required_concepts": ["office"],
+                        "optional_concepts": [],
+                    },
+                    {
+                        "term": "final sunset",
+                        "weight": 0.7,
+                        "visual_intent": "Encerra com o pôr do sol.",
+                        "alternatives": ["sunset sky"],
+                        "required_concepts": ["sunset"],
+                        "optional_concepts": ["sky"],
+                    },
+                ]
+            )
+
+        with patch.object(llm, "_generate_response", side_effect=fake_generate_response):
+            result = llm.generate_terms(
+                video_subject="startup story",
+                video_script="First city. Then office. Finally sunset.",
+                amount=3,
+                match_script_order=True,
+            )
+
+        self.assertTrue(result.has_explicit_weights)
+        dumped = [keyword.model_dump() for keyword in result.keywords]
+        self.assertEqual([k["term"] for k in dumped], ["opening city", "middle office", "final sunset"])
+        self.assertEqual([k["weight"] for k in dumped], [1.0, 0.85, 0.7])
+        self.assertEqual(dumped[0]["visual_intent"], "Abre com a cidade para situar o espectador.")
+        self.assertEqual(dumped[0]["alternatives"], ["city skyline", "urban opening shot"])
+        self.assertEqual(dumped[0]["required_concepts"], ["city"])
+        self.assertEqual(dumped[0]["optional_concepts"], ["skyline"])
+        self.assertIn("chronological stock-video search packages", captured["prompt"])
+        self.assertIn("visual moment", captured["prompt"])
+        self.assertIn("same order as the script narration", captured["prompt"])
+        self.assertIn("alternatives", captured["prompt"])
+        self.assertIn("required_concepts", captured["prompt"])
+        self.assertIn("optional_concepts", captured["prompt"])
+        self.assertIn('"weight"', captured["prompt"])
+
+    def test_generate_terms_simple_mode_keeps_legacy_prompt_and_shape(self):
+        """terms_output_mode="simple" is the escape hatch for weaker LLMs: no
+        visual-package vocabulary in the prompt, and the model still fills the
+        new fields with compat defaults (required_concepts = term.split())."""
         captured = {}
 
         def fake_generate_response(prompt):
@@ -123,20 +188,25 @@ class TestScriptPromptOptions(unittest.TestCase):
                 video_script="First city. Then office. Finally sunset.",
                 amount=3,
                 match_script_order=True,
+                terms_output_mode="simple",
             )
 
+        self.assertTrue(result.has_explicit_weights)
+        dumped = [keyword.model_dump() for keyword in result.keywords]
         self.assertEqual(
-            [keyword.model_dump() for keyword in result.keywords],
+            [{"term": k["term"], "weight": k["weight"]} for k in dumped],
             [
                 {"term": "opening city", "weight": 1.0},
                 {"term": "middle office", "weight": 0.85},
                 {"term": "final sunset", "weight": 0.7},
             ],
         )
-        self.assertTrue(result.has_explicit_weights)
+        self.assertEqual(dumped[0]["visual_intent"], "")
+        self.assertEqual(dumped[0]["alternatives"], [])
+        self.assertEqual(dumped[0]["required_concepts"], ["opening", "city"])
+        self.assertNotIn("visual_intent", captured["prompt"])
+        self.assertNotIn("required_concepts", captured["prompt"])
         self.assertIn("chronological stock-video search terms", captured["prompt"])
-        self.assertIn("same order as the script narration", captured["prompt"])
-        self.assertIn('"weight"', captured["prompt"])
 
     def test_generate_terms_accepts_legacy_string_array_response(self):
         def fake_generate_response(prompt):
@@ -155,6 +225,7 @@ class TestScriptPromptOptions(unittest.TestCase):
             [keyword.term for keyword in result.keywords],
             ["opening city", "middle office", "final sunset"],
         )
+        self.assertEqual(result.keywords[0].required_concepts, ["opening", "city"])
 
     def test_video_script_request_rejects_invalid_advanced_options(self):
         """

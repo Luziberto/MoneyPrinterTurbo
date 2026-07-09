@@ -144,12 +144,12 @@ RUNTIME_UI_KEYS = (
 RUNTIME_TRACKED_KEYS = RUNTIME_SESSION_KEYS + RUNTIME_UI_KEYS
 
 STEP_IDS = (
-    "idea",
     "script",
     "collector",
     "preview",
     "render",
     "result",
+    "publish",
 )
 
 PIPELINE_STEP_COUNT = len(STEP_IDS)
@@ -157,12 +157,12 @@ PIPELINE_STEP_COUNT = len(STEP_IDS)
 
 def pipeline_step_labels(tr: Callable[[str], str]) -> list[str]:
     return [
-        tr("Cockpit Step Idea"),
         tr("Cockpit Step Script"),
         tr("Cockpit Step Collector"),
         tr("Cockpit Step Preview"),
         tr("Cockpit Step Render"),
         tr("Cockpit Step Result"),
+        tr("Cockpit Step Publish"),
     ]
 
 
@@ -197,6 +197,55 @@ def _count_keywords(terms_text: str) -> int:
     return len([part for part in str(terms_text).split(",") if part.strip()])
 
 
+def _script_word_count(script: str) -> int:
+    text = str(script or "").strip()
+    if not text:
+        return 0
+    return len(text.split())
+
+
+def _parse_target_words_max(target_words: str) -> int | None:
+    raw = str(target_words or "").strip()
+    if not raw:
+        return None
+    numbers = [int(part) for part in raw.replace("–", "-").split("-") if part.strip().isdigit()]
+    if not numbers:
+        return None
+    return max(numbers)
+
+
+def _format_script_words_display(words: int, target_words: str, tr: Callable[[str], str]) -> str:
+    target_max = _parse_target_words_max(target_words)
+    if words <= 0 and target_max is None:
+        return ""
+    if target_max is not None:
+        return tr("Cockpit Words Progress").format(current=words, maximum=target_max)
+    return tr("Cockpit Words Count").format(count=words)
+
+
+def _resolve_llm_model_label() -> str:
+    from app.config import config
+
+    provider = str(config.app.get("llm_provider") or "—")
+    if provider == "litellm":
+        return str(config.app.get("litellm_model_name") or provider)
+    if provider == "bedrock":
+        return str(config.app.get("bedrock_model_name") or provider)
+    if provider == "anthropic":
+        return str(config.app.get("anthropic_model_name") or provider)
+    model_key = f"{provider}_model_name"
+    return str(config.app.get(model_key) or config.app.get("text_llm_model") or provider)
+
+
+def _resolve_llm_temperature() -> str:
+    from app.config import config
+
+    value = config.app.get("llm_temperature")
+    if value is None:
+        return "0.5"
+    return str(value)
+
+
 def _collector_job_snapshot() -> dict[str, Any]:
     return dict(st.session_state.get("last_collector_job") or {})
 
@@ -227,26 +276,30 @@ def compute_pipeline_step_states(
     active = max(0, min(active, PIPELINE_STEP_COUNT - 1))
 
     done = [False] * PIPELINE_STEP_COUNT
-    done[0] = bool(str(st.session_state.get("video_subject", "") or "").strip())
-    done[1] = bool(str(st.session_state.get("video_script", "") or "").strip())
+    done[0] = bool(str(st.session_state.get("video_script", "") or "").strip())
 
     if video_source == "collector":
         job = _collector_job_snapshot()
-        done[2] = (
+        done[1] = (
             job.get("status") == "ready"
             or int(job.get("selected_clips_count") or 0) > 0
         )
     else:
-        done[2] = done[1]
+        done[1] = done[0]
 
-    done[3] = bool(st.session_state.get("preview_ready"))
+    done[2] = bool(st.session_state.get("preview_ready"))
 
     last_task = st.session_state.get("last_render_task_id")
     if last_task:
         tasks_root = ROOT_DIR / "storage" / "tasks" / str(last_task)
         if (tasks_root / "final-1.mp4").is_file():
+            done[3] = True
             done[4] = True
-            done[5] = True
+
+    if st.session_state.get("cockpit_publish_done"):
+        done[5] = True
+    elif _sync_publish_mode_from_config() == "skip":
+        done[5] = True
 
     states: list[str] = []
     for index in range(PIPELINE_STEP_COUNT):
@@ -261,11 +314,40 @@ def compute_pipeline_step_states(
 
 def _pipeline_dot_emoji(status: str) -> str:
     return {
-        "done": "🟢",
-        "active": "🟠",
-        "pending": "⚪",
-        "blocked": "🔴",
-    }.get(status, "⚪")
+        "done": "✓",
+        "active": "●",
+        "pending": "○",
+        "blocked": "⚠",
+    }.get(status, "○")
+
+
+def _short_channel_label(name: str, slug: str = "") -> str:
+    text = str(name or slug or "—").strip()
+    if not text or text == "—":
+        return "—"
+    if len(text) <= 14:
+        return text
+    if slug and len(slug) <= 14:
+        return slug
+    return text.split()[0][:14]
+
+
+def _humanize_model_label(model: str) -> str:
+    raw = str(model or "—").strip()
+    if not raw or raw == "—":
+        return "—"
+    lowered = raw.lower()
+    if "claude" in lowered and "sonnet" in lowered:
+        return "Claude Sonnet"
+    if "claude" in lowered and "opus" in lowered:
+        return "Claude Opus"
+    if "claude" in lowered and "haiku" in lowered:
+        return "Claude Haiku"
+    if "/" in raw:
+        raw = raw.split("/")[-1]
+    if len(raw) > 36:
+        return raw[:33] + "…"
+    return raw
 
 
 def render_pipeline_nav(tr: Callable[[str], str]) -> None:
@@ -292,7 +374,7 @@ def render_pipeline_nav(tr: Callable[[str], str]) -> None:
     for step_index, label in enumerate(labels):
         state = states[step_index]
         dot = _pipeline_dot_emoji(state)
-        suffix = " ✔" if state == "done" else ""
+        suffix = ""
         is_active = step_index == active_index
         with nav_cols[step_index]:
             if st.button(
@@ -357,10 +439,10 @@ def render_channel_header(
 
     display_name = str(channel_config.get("name") or selected or "—")
 
-    ch_label, ch_select = st.columns([1.2, 3])
+    ch_label, ch_select = st.columns([2.2, 1])
     with ch_label:
         st.markdown(
-            f'<div class="cockpit-channel-inline">🟢 {tr("Cockpit Channel Live")}: '
+            f'<div class="cockpit-channel-inline">{tr("Cockpit Channel Live")}: '
             f'<strong>{display_name}</strong></div>',
             unsafe_allow_html=True,
         )
@@ -419,25 +501,58 @@ def _render_production_badges(
     return "".join(parts)
 
 
+def _render_production_summary_body(
+    *,
+    video_source: str,
+    aspect: str,
+    target_clips: int,
+    voice: str,
+    tts_label: str,
+    bgm: str,
+    duration: str,
+    mode: str,
+    tr: Callable[[str], str],
+) -> str:
+    video_line = (
+        f'<div class="cockpit-prod-line">'
+        f'<span class="cockpit-prod-line-label">{tr("Cockpit Prod Video")}</span>'
+        f'<span class="cockpit-prod-line-value">{video_source} · {aspect} · {target_clips} clips</span>'
+        f"</div>"
+    )
+    audio_line = (
+        f'<div class="cockpit-prod-line">'
+        f'<span class="cockpit-prod-line-label">{tr("Cockpit Prod Audio")}</span>'
+        f'<span class="cockpit-prod-line-value">{voice} · {tts_label} · {bgm}</span>'
+        f"</div>"
+    )
+    duration_text = duration if "s" in str(duration).lower() else f"{duration}s"
+    prod_line = (
+        f'<div class="cockpit-prod-line">'
+        f'<span class="cockpit-prod-line-label">{tr("Cockpit Prod Production")}</span>'
+        f'<span class="cockpit-prod-line-value">{duration_text} · {mode.title()}</span>'
+        f"</div>"
+    )
+    return (
+        f'<div class="cockpit-prod-summary-body">{video_line}{audio_line}{prod_line}</div>'
+    )
+
+
 def render_production_summary(
     runtime: dict[str, Any],
+    video_source_for_providers: str,
+    voice_name: str,
     tr: Callable[[str], str],
 ) -> None:
-    """Production header with grouped badges."""
+    """Global production summary + compact provider readiness, single accordion."""
     from app.config import config
 
     effective = _effective_runtime(runtime)
-    overrides = refresh_channel_overrides()
-    collapsed = bool(st.session_state.get("production_summary_collapsed", False))
-
+    refresh_channel_overrides()
     target_clips, _ = _collector_limits_from_runtime(runtime)
     video_source = _format_summary_value("video_source", effective, tr)
     aspect = str(effective.get("video_aspect") or "—")
     tts = str(config.ui.get("tts_server", "azure-tts-v1") or "azure")
-    if tts.startswith("azure"):
-        tts_label = "Azure"
-    else:
-        tts_label = tts.replace("-tts", "").title()
+    tts_label = "Azure" if tts.startswith("azure") else tts.replace("-tts", "").title()
     voice = _format_summary_value("voice_name", effective, tr)
     bgm = _format_summary_value("bgm_type", effective, tr)
     if effective.get("bgm_profile"):
@@ -445,40 +560,36 @@ def render_production_summary(
     duration = str(effective.get("target_duration") or "—")
     mode = str(effective.get("mode") or "faceless")
 
-    video_ov = bool(overrides & {"video_source", "video_aspect", "video_clip_duration"})
-    audio_ov = bool(overrides & {"voice_name", "bgm_type", "bgm_profile"})
+    duration_short = duration if "s" in str(duration).lower() else f"{duration}s"
+    preview = f"{video_source} · {aspect} · {duration_short} · {mode.title()}"
 
-    video_badges = [
-        _prod_badge(video_source, tone="accent" if video_ov else "default"),
-        _prod_badge(aspect),
-        _prod_badge(f"{target_clips} clips", tone="metric"),
-    ]
-    audio_badges = [
-        _prod_badge(voice, tone="accent" if audio_ov else "default"),
-        _prod_badge(tts_label),
-        _prod_badge(bgm),
-    ]
-    prod_badges = [
-        _prod_badge(f"{duration}s", tone="metric"),
-        _prod_badge(mode.title()),
-    ]
-
-    st.markdown(
-        _render_production_badges(
-            video_badges=video_badges,
-            audio_badges=audio_badges,
-            prod_badges=prod_badges,
-            compact=collapsed,
-        ),
-        unsafe_allow_html=True,
+    checks = _provider_checks(video_source_for_providers, voice_name, tr)
+    ready_count = sum(1 for _, status, _ in checks if status == tr("Cockpit Status Ready"))
+    expander_label = (
+        f"{tr('Cockpit Production Summary Title')} · {preview} "
+        f"· {tr('Cockpit Provider Status')} {ready_count}/{len(checks)}"
     )
 
-    collapsed_toggle = st.checkbox(
-        tr("Cockpit Collapse Production Summary"),
-        value=collapsed,
-        key="production_summary_collapsed_cb",
+    summary_body = _render_production_summary_body(
+        video_source=video_source,
+        aspect=aspect,
+        target_clips=target_clips,
+        voice=voice,
+        tts_label=tts_label,
+        bgm=bgm,
+        duration=duration,
+        mode=mode,
+        tr=tr,
     )
-    st.session_state["production_summary_collapsed"] = collapsed_toggle
+    with st.expander(expander_label, expanded=False):
+        col_summary, col_providers = st.columns([3, 7])
+        with col_summary:
+            st.markdown(
+                f'<div class="cockpit-prod-summary-box">{summary_body}</div>',
+                unsafe_allow_html=True,
+            )
+        with col_providers:
+            _render_provider_grid(checks, tr, compact=True)
 
 
 def render_ops_bar(tr: Callable[[str], str], video_source: str) -> None:
@@ -516,29 +627,143 @@ def render_ops_bar(tr: Callable[[str], str], video_source: str) -> None:
     )
 
 
-def _render_context_row(label: str, value: str) -> None:
+def _render_context_rows(pairs: list[tuple[str, str]]) -> None:
+    rows = []
+    for label, value in pairs:
+        rows.append(
+            f'<div class="cockpit-context-row">'
+            f'<span class="cockpit-context-label">{label}</span>'
+            f'<span class="cockpit-context-value">{value}</span>'
+            f"</div>"
+        )
     st.markdown(
-        f'<div class="cockpit-context-row">'
-        f'<span class="cockpit-context-label">{label}</span>'
-        f'<span class="cockpit-context-value">{value}</span>'
-        f"</div>",
+        f'<div class="cockpit-context-rows">{"".join(rows)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_script_stage_summary(
+    params: Any,
+    runtime: dict[str, Any],
+    tr: Callable[[str], str],
+) -> None:
+    """Live production summary for the script inspector."""
+    effective = _effective_runtime(runtime)
+    words = _script_word_count(st.session_state.get("video_script", ""))
+    from webui import cockpit_keywords
+
+    keyword_count = cockpit_keywords.count_video_terms()
+    target_clips, _ = _collector_limits_from_runtime(runtime)
+    target_words = str(effective.get("target_words") or "")
+    target_duration = str(effective.get("target_duration") or "—")
+    lang = str(
+        params.video_language
+        or effective.get("video_language")
+        or tr("Auto Detect")
+    )
+
+    rows: list[tuple[str, str]] = [
+        (tr("Cockpit Summary Language"), lang or tr("Auto Detect")),
+    ]
+    if target_duration and target_duration != "—":
+        duration_value = (
+            target_duration
+            if "s" in target_duration.lower()
+            else f"{target_duration} s"
+        )
+        rows.append((tr("Cockpit Summary Target Duration"), duration_value))
+    words_display = _format_script_words_display(words, target_words, tr)
+    if words_display:
+        rows.append((tr("Cockpit Summary Words"), words_display))
+    rows.extend([
+        (tr("Cockpit Summary Keywords"), str(keyword_count)),
+        (tr("Cockpit Summary Target Clips"), str(target_clips)),
+        (tr("Cockpit Summary Temperature"), _resolve_llm_temperature()),
+    ])
+    if target_words:
+        rows.append((tr("Cockpit Summary Script Words"), target_words))
+
+    st.markdown(
+        f'<div class="cockpit-inspector-summary">'
+        f'<div class="cockpit-inspector-summary-title">{tr("Cockpit Stage Summary")}</div>',
+        unsafe_allow_html=True,
+    )
+    _render_context_rows(rows)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_title_overlay_controls(
+    params: Any,
+    runtime: dict[str, Any],
+    tr: Callable[[str], str],
+) -> None:
+    """Title overlay options grouped in the script inspector."""
+    effective = _effective_runtime(runtime)
+    title_enabled = st.checkbox(
+        tr("Title Overlay Enabled"),
+        value=bool(
+            st.session_state.get(
+                "title_enabled",
+                effective.get("title_enabled", False),
+            )
+        ),
+    )
+    st.session_state["title_enabled"] = title_enabled
+    assign_model_fields(params, title_enabled=title_enabled)
+    if not title_enabled:
+        assign_model_fields(params, title_text="")
+        return
+
+    title_text = st.text_input(
+        tr("Title Overlay Text"),
+        value=str(
+            st.session_state.get(
+                "title_text",
+                effective.get("title_text", params.video_subject),
+            )
+            or ""
+        ),
+    ).strip()
+    title_duration = float(
+        st.slider(
+            tr("Title Overlay Duration"),
+            min_value=1.0,
+            max_value=8.0,
+            value=float(
+                st.session_state.get(
+                    "title_duration",
+                    effective.get("title_duration", 3.0),
+                )
+            ),
+            step=0.5,
+        )
+    )
+    st.session_state["title_text"] = title_text
+    st.session_state["title_duration"] = title_duration
+    assign_model_fields(
+        params,
+        title_text=title_text,
+        title_duration=title_duration,
+    )
+
+
+def _render_context_chips_compact(pairs: list[tuple[str, str]]) -> None:
+    chips = []
+    for label, value in pairs:
+        chips.append(
+            f'<span class="cockpit-ctx-chip-inline">'
+            f'<span class="cockpit-ctx-chip-inline-label">{label}:</span>'
+            f'<span class="cockpit-ctx-chip-inline-value">{value}</span>'
+            f"</span>"
+        )
+    st.markdown(
+        f'<div class="cockpit-context-chips">{"".join(chips)}</div>',
         unsafe_allow_html=True,
     )
 
 
 def _render_context_badges(pairs: list[tuple[str, str]]) -> None:
-    chips = []
-    for label, value in pairs:
-        chips.append(
-            f'<div class="cockpit-ctx-chip">'
-            f'<span class="cockpit-ctx-chip-label">{label}</span>'
-            f'<span class="cockpit-ctx-chip-value">{value}</span>'
-            f"</div>"
-        )
-    st.markdown(
-        f'<div class="cockpit-context-badges">{"".join(chips)}</div>',
-        unsafe_allow_html=True,
-    )
+    _render_context_chips_compact(pairs)
 
 
 def render_document_stage(title: str) -> None:
@@ -553,6 +778,15 @@ def render_document_stage(title: str) -> None:
 
 def render_document_divider() -> None:
     st.markdown('<div class="cockpit-doc-divider"></div>', unsafe_allow_html=True)
+
+
+def render_document_content_section(label: str, *, hint: str | None = None) -> None:
+    st.markdown(
+        f'<div class="cockpit-doc-content-section">{label}</div>',
+        unsafe_allow_html=True,
+    )
+    if hint:
+        st.caption(hint)
 
 
 def render_document_section_label(label: str) -> None:
@@ -584,31 +818,32 @@ def render_stage_context(
         unsafe_allow_html=True,
     )
 
-    if step_id == "idea":
-        provider = str(config.app.get("llm_provider") or "—")
-        _render_context_badges([
-            (tr("Cockpit Context Channel"), channel_name),
-            (tr("Cockpit Context Niche"), str(effective.get("video_subject") or params.video_subject or "—")),
-            (tr("Cockpit Context LLM"), provider),
-        ])
-
-    elif step_id == "script":
-        script = str(st.session_state.get("video_script") or "")
-        words = len(script.split()) if script else 0
-        _render_context_badges([
-            (tr("Cockpit Context Channel"), channel_name),
-            (tr("Video Subject"), str(params.video_subject or "—")),
-            (tr("Cockpit Context Words"), f"~{words}"),
+    if step_id == "script":
+        effective = _effective_runtime(runtime)
+        lang = str(
+            params.video_language
+            or effective.get("video_language")
+            or config.ui.get("video_language")
+            or ""
+        )
+        lang_display = lang or tr("Auto Detect")
+        slug = str(effective.get("slug") or "")
+        _render_context_chips_compact([
+            (tr("Cockpit Context Channel"), _short_channel_label(channel_name, slug)),
+            (tr("Cockpit Field Subject"), str(params.video_subject or "—")[:40]),
+            (tr("Cockpit Context Language"), lang_display),
+            (tr("Cockpit Summary Model"), _humanize_model_label(_resolve_llm_model_label())),
         ])
 
     elif step_id == "collector":
+        from webui import cockpit_keywords
+
         job = _collector_job_snapshot()
-        terms = str(st.session_state.get("video_terms") or "")
         target, _ = _collector_limits_from_runtime(runtime)
         cache_local = job.get("local_reused", "—")
         _render_context_badges([
             (tr("Cockpit Context Channel"), channel_name),
-            (tr("Cockpit Context Keywords"), str(_count_keywords(terms))),
+            (tr("Cockpit Context Keywords"), str(cockpit_keywords.count_video_terms())),
             (tr("Cockpit Context Target Clips"), str(target)),
             (tr("Cockpit Context Cache"), f"{cache_local}"),
         ])
@@ -629,6 +864,23 @@ def render_stage_context(
         _render_context_badges([
             (tr("Cockpit Context Channel"), channel_name),
             (tr("Cockpit Task Id"), str(task_id)[:12]),
+        ])
+
+    elif step_id == "publish":
+        from app.services import publish as publish_service
+
+        platforms, _, _ = resolve_cockpit_publish_platforms(
+            st.session_state.get("active_channel_config") or {}
+        )
+        backend = publish_service.get_backend_name()
+        configured = publish_service.get_active_service().is_configured()
+        _render_context_badges([
+            (tr("Cockpit Publish Backend"), backend),
+            (tr("Cockpit Publish Platforms"), ", ".join(platforms) or "—"),
+            (
+                tr("Cockpit Publish Status"),
+                tr("Cockpit Status Ready") if configured else tr("Cockpit Status Blocked"),
+            ),
         ])
 
     elif step_id == "result":
@@ -663,9 +915,11 @@ def render_stage_inspector(
 
 
 def _preview_checklist_state(video_source: str, runtime: dict[str, Any], tr: Callable[[str], str]) -> list[tuple[str, bool]]:
+    from webui import cockpit_keywords
+
     effective = _effective_runtime(runtime)
     has_script = bool(str(st.session_state.get("video_script", "") or "").strip())
-    has_terms = bool(str(st.session_state.get("video_terms", "") or "").strip())
+    has_terms = cockpit_keywords.has_video_terms()
     job = _collector_job_snapshot()
     collector_ok = video_source != "collector" or job.get("status") == "ready" or int(
         job.get("selected_clips_count") or 0
@@ -768,6 +1022,16 @@ def render_render_editor(
         st.warning(tr("Cockpit Assembly Need Preview"))
 
     st.caption(tr("Cockpit Render Hint"))
+    mode = _sync_publish_mode_from_config()
+    mode_labels = {
+        "manual": tr("Cockpit Publish Mode Manual"),
+        "auto": tr("Cockpit Publish Mode Auto"),
+        "skip": tr("Cockpit Publish Mode Skip"),
+    }
+    st.caption(
+        f"{tr('Cockpit Publish Mode')}: **{mode_labels.get(mode, mode)}** "
+        f"({tr('Cockpit Publish Mode Change Hint')})"
+    )
     st.markdown('<div class="cockpit-cta-bar">', unsafe_allow_html=True)
     render_btn = st.button(
         tr("Cockpit Render Video"),
@@ -910,6 +1174,254 @@ def render_result_editor(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def resolve_cockpit_publish_platforms(
+    channel_config: dict[str, Any],
+) -> tuple[list[str], list[dict[str, str]], str | None]:
+    """Resolve publish targets from channel publish_profiles or global config."""
+    from pipeline.lib.publish_profiles import (
+        resolve_config_publish_platforms,
+        resolve_publish_platforms,
+    )
+
+    profiles = channel_config.get("publish_profiles")
+    has_enabled = isinstance(profiles, list) and any(
+        isinstance(profile, dict) and profile.get("enabled")
+        for profile in profiles
+    )
+    if has_enabled:
+        return resolve_publish_platforms(channel_config)
+    return resolve_config_publish_platforms()
+
+
+def _publish_auto_upload_key() -> str:
+    from app.services import publish as publish_service
+
+    if publish_service.get_backend_name() == "zernio":
+        return "zernio_auto_upload"
+    return "upload_post_auto_upload"
+
+
+def _publish_readiness(tr: Callable[[str], str]) -> tuple[str, str]:
+    from app.services import publish as publish_service
+
+    backend = publish_service.get_backend_name()
+    service = publish_service.get_active_service()
+    if not service.is_configured():
+        return tr("Cockpit Status Blocked"), f"{backend} — {tr('Cockpit Publish Not Configured')}"
+    platforms, _, _ = resolve_cockpit_publish_platforms(
+        st.session_state.get("active_channel_config") or {}
+    )
+    if not platforms:
+        return tr("Cockpit Status Blocked"), tr("Cockpit Publish No Platforms")
+    return tr("Cockpit Status Ready"), f"{backend} → {', '.join(platforms)}"
+
+
+def _render_last_publish_results(tr: Callable[[str], str]) -> None:
+    results = st.session_state.get("cockpit_last_publish_results")
+    if not isinstance(results, list) or not results:
+        return
+    with st.expander(tr("Cockpit Publish Last Results"), expanded=False):
+        for index, result in enumerate(results, start=1):
+            if not isinstance(result, dict):
+                continue
+            status = tr("Cockpit Publish Success") if result.get("success") else tr(
+                "Cockpit Publish Failed"
+            )
+            st.markdown(f"**{tr('Cockpit Publish Attempt')} {index}:** {status}")
+            if result.get("post_id"):
+                st.caption(f"post_id: {result['post_id']}")
+            platform_results = result.get("platform_results")
+            if isinstance(platform_results, list):
+                for item in platform_results:
+                    if isinstance(item, dict):
+                        st.caption(
+                            f"{item.get('platform', '?')}: {item.get('status', '—')} "
+                            f"{item.get('error', '')}"
+                        )
+            if result.get("error"):
+                st.warning(str(result["error"]))
+
+
+def _sync_publish_mode_from_config() -> str:
+    """Map session/config to publish mode: manual | auto | skip."""
+    from app.config import config
+
+    mode = st.session_state.get("cockpit_publish_mode")
+    if mode in ("manual", "auto", "skip"):
+        return str(mode)
+
+    if st.session_state.get("cockpit_skip_publish"):
+        return "skip"
+    auto_key = _publish_auto_upload_key()
+    if bool(config.app.get(auto_key, False)):
+        return "auto"
+    return "manual"
+
+
+def _apply_publish_mode(mode: str) -> None:
+    from app.config import config
+
+    if mode not in ("manual", "auto", "skip"):
+        mode = "manual"
+    st.session_state["cockpit_publish_mode"] = mode
+    st.session_state["cockpit_skip_publish"] = mode == "skip"
+    auto_key = _publish_auto_upload_key()
+    config.app[auto_key] = mode == "auto"
+
+
+def _render_publish_mode_selector(tr: Callable[[str], str]) -> str:
+    """Single mutually-exclusive control for how publishing runs after render."""
+    current = _sync_publish_mode_from_config()
+    labels = {
+        "manual": tr("Cockpit Publish Mode Manual"),
+        "auto": tr("Cockpit Publish Mode Auto"),
+        "skip": tr("Cockpit Publish Mode Skip"),
+    }
+    mode = st.radio(
+        tr("Cockpit Publish Mode"),
+        options=["manual", "auto", "skip"],
+        index=["manual", "auto", "skip"].index(current),
+        format_func=lambda value: labels[value],
+        key="cockpit_publish_mode",
+        help=tr("Cockpit Publish Mode Hint"),
+        horizontal=True,
+    )
+    _apply_publish_mode(str(mode))
+    return str(mode)
+
+
+def render_publish_editor(
+    params: Any,
+    channel_config: dict[str, Any],
+    tr: Callable[[str], str],
+) -> bool:
+    """Publish step editor. Returns True if publish was requested."""
+    from app.services import publish as publish_service
+
+    render_document_stage(tr("Cockpit Step Publish"))
+
+    backend = publish_service.get_backend_name()
+    platforms, skipped, youtube_privacy = resolve_cockpit_publish_platforms(channel_config)
+    status_label, status_detail = _publish_readiness(tr)
+
+    st.markdown(
+        f"**{tr('Cockpit Publish Backend')}:** `{backend}` · "
+        f"**{tr('Cockpit Publish Platforms')}:** "
+        f"{', '.join(platforms) if platforms else '—'}"
+    )
+    if youtube_privacy:
+        st.caption(f"YouTube privacy: {youtube_privacy}")
+    if status_label == tr("Cockpit Status Ready"):
+        st.success(status_detail)
+    else:
+        st.warning(status_detail)
+
+    for item in skipped:
+        st.caption(
+            f"⊘ {item.get('platform')}: {item.get('reason', '')}"
+        )
+
+    mode = _render_publish_mode_selector(tr)
+
+    task_id = str(st.session_state.get("last_render_task_id") or "")
+    video_path = ROOT_DIR / "storage" / "tasks" / task_id / "final-1.mp4" if task_id else None
+    if not video_path or not video_path.is_file():
+        st.info(tr("Cockpit Publish Need Render"))
+        return False
+
+    if mode == "skip":
+        st.info(tr("Cockpit Publish Skipped"))
+        return False
+
+    _render_last_publish_results(tr)
+
+    st.markdown('<div class="cockpit-cta-bar">', unsafe_allow_html=True)
+    publish_btn = st.button(
+        tr("Cockpit Publish Now"),
+        type="primary",
+        use_container_width=True,
+        key="cockpit_publish_btn",
+        disabled=status_label != tr("Cockpit Status Ready"),
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    return publish_btn
+
+
+def run_cockpit_publish(
+    params: Any,
+    channel_config: dict[str, Any],
+    tr: Callable[[str], str],
+) -> bool:
+    """Cross-post the last rendered video via the active publish backend."""
+    from app.services import publish as publish_service
+
+    if st.session_state.get("cockpit_skip_publish"):
+        st.session_state["cockpit_publish_done"] = True
+        return True
+
+    task_id = str(st.session_state.get("last_render_task_id") or "")
+    if not task_id:
+        st.error(tr("Cockpit Publish Need Render"))
+        return False
+
+    video_path = ROOT_DIR / "storage" / "tasks" / task_id / "final-1.mp4"
+    if not video_path.is_file():
+        st.error(tr("Cockpit Publish Need Render"))
+        return False
+
+    platforms, skipped, youtube_privacy = resolve_cockpit_publish_platforms(channel_config)
+    if not platforms:
+        st.error(tr("Cockpit Publish No Platforms"))
+        for item in skipped:
+            st.caption(f"⊘ {item.get('platform')}: {item.get('reason', '')}")
+        return False
+
+    service = publish_service.get_active_service()
+    if not service.is_configured():
+        backend = publish_service.get_backend_name()
+        st.error(f"{backend}: {tr('Cockpit Publish Not Configured')}")
+        return False
+
+    with st.status(tr("Cockpit Publish Running"), expanded=True) as status:
+        status.write(f"{tr('Cockpit Publish Platforms')}: {', '.join(platforms)}")
+        results = publish_service.cross_post_videos(
+            video_paths=[str(video_path)],
+            subject=str(params.video_subject or st.session_state.get("video_subject") or ""),
+            script=str(params.video_script or st.session_state.get("video_script") or ""),
+            language=str(params.video_language or ""),
+            platforms=platforms,
+            youtube_privacy_status=youtube_privacy,
+        )
+        st.session_state["cockpit_last_publish_results"] = results
+
+        if any(isinstance(r, dict) and r.get("success") for r in results):
+            st.session_state["cockpit_publish_done"] = True
+            status.update(label=tr("Cockpit Publish Done"), state="complete")
+            st.success(tr("Cockpit Publish Done"))
+            return True
+
+        status.update(state="error")
+        for result in results:
+            if isinstance(result, dict) and result.get("error"):
+                st.error(str(result["error"]))
+        return False
+
+
+def maybe_auto_publish_after_render(
+    params: Any,
+    channel_config: dict[str, Any],
+    tr: Callable[[str], str],
+) -> bool:
+    """Run publish after render only when mode is 'auto'."""
+    if _sync_publish_mode_from_config() != "auto":
+        return False
+    from app.services import publish as publish_service
+
+    if not publish_service.get_active_service().is_configured():
+        return False
+    return run_cockpit_publish(params, channel_config, tr)
+
+
 def render_collector_panel(
     params: Any,
     tr: Callable[[str], str],
@@ -1016,8 +1528,9 @@ def run_collector_fetch(params: Any, tr: Callable[[str], str]) -> bool:
     from app.models.schema import CollectorJobRequest, normalize_collector_keywords
     from app.services import collector_client
 
-    terms = str(st.session_state.get("video_terms") or params.video_terms or "")
-    normalized = normalize_collector_keywords(terms)
+    from webui import cockpit_keywords
+
+    normalized = cockpit_keywords.get_normalized_video_terms()
     if not normalized.keywords:
         st.error(tr("Cockpit Collector Need Keywords"))
         return False
@@ -1114,6 +1627,7 @@ def build_runtime_config(slug: str) -> dict[str, Any]:
         "video_clip_duration": int(channel.get("video_clip_duration", 3) or 3),
         "video_count": int(channel.get("video_count", 1) or 1),
         "target_duration": str(channel.get("target_duration", "") or ""),
+        "target_words": str(channel.get("target_words", "") or ""),
         "mode": str(channel.get("mode", "faceless") or "faceless"),
         "collector": dict(channel.get("collector") or {}),
     }
@@ -1227,8 +1741,6 @@ def _init_cockpit_session_state() -> None:
         st.session_state["cockpit_collapsed_steps"] = set()
     if "channel_overrides" not in st.session_state:
         st.session_state["channel_overrides"] = set()
-    if "production_summary_collapsed" not in st.session_state:
-        st.session_state["production_summary_collapsed"] = False
     if "last_collector_job" not in st.session_state:
         st.session_state["last_collector_job"] = {}
 
@@ -1274,9 +1786,12 @@ def sync_params_from_ui(params: Any) -> None:
 
     from app.models.schema import VideoAspect, VideoConcatMode, VideoTransitionMode
 
+    from webui import cockpit_keywords
+
     params.video_subject = str(st.session_state.get("video_subject", "") or "").strip()
     params.video_script = str(st.session_state.get("video_script", "") or "")
-    params.video_terms = str(st.session_state.get("video_terms", "") or "")
+    payloads = cockpit_keywords.payloads_for_params()
+    params.video_terms = payloads or None
     params.video_language = str(config.ui.get("video_language", "") or "")
     params.paragraph_number = int(st.session_state.get("paragraph_number_input", 1) or 1)
     params.video_script_prompt = str(st.session_state.get("video_script_prompt", "") or "")
@@ -1799,8 +2314,10 @@ def render_assembly_panel(
     advanced_mode: bool,
 ) -> None:
     """Montagem step — checklist, settings summary and script preview."""
+    from webui import cockpit_keywords
+
     has_script = bool(str(st.session_state.get("video_script", "") or "").strip())
-    has_terms = bool(str(st.session_state.get("video_terms", "") or "").strip())
+    has_terms = cockpit_keywords.has_video_terms()
     preview_ready = bool(st.session_state.get("preview_ready"))
 
     st.markdown(f"**{tr('Cockpit Assembly Checklist')}**")
@@ -1833,7 +2350,7 @@ def render_assembly_panel(
 
     if has_terms:
         with st.expander(tr("Video Keywords"), expanded=False):
-            st.text(st.session_state.get("video_terms", ""))
+            st.text(cockpit_keywords.format_for_display())
 
     st.caption(tr("Cockpit Assembly CTA Hint"))
 
@@ -2019,6 +2536,56 @@ _PROVIDER_ICONS: dict[str, str] = {
 }
 
 
+def _provider_checks(
+    video_source: str,
+    voice_name: str,
+    tr: Callable[[str], str],
+) -> list[tuple[str, str, str]]:
+    return [
+        (tr("Cockpit Provider Collector"), *_collector_readiness(video_source, tr)),
+        (tr("Cockpit Provider LLM"), *_llm_readiness(tr)),
+        (tr("Cockpit Provider TTS"), *_tts_readiness(voice_name, tr)),
+        (tr("Cockpit Provider FFmpeg"), *_ffmpeg_readiness(tr)),
+        (tr("Cockpit Provider BGM"), *_bgm_readiness(tr)),
+    ]
+
+
+def _provider_short_label(label: str, tr: Callable[[str], str]) -> str:
+    mapping = {
+        tr("Cockpit Provider Collector"): "Collector",
+        tr("Cockpit Provider LLM"): "LLM",
+        tr("Cockpit Provider TTS"): "TTS",
+        tr("Cockpit Provider FFmpeg"): "FFmpeg",
+        tr("Cockpit Provider BGM"): "BGM",
+    }
+    return mapping.get(label, label)
+
+
+def _render_provider_grid(
+    checks: list[tuple[str, str, str]],
+    tr: Callable[[str], str],
+    *,
+    compact: bool = False,
+) -> None:
+    grid_class = "cockpit-provider-grid-compact" if compact else "cockpit-provider-grid"
+    card_class = "cockpit-provider-card-compact" if compact else "cockpit-provider-card"
+    card_html = [f'<div class="{grid_class}">']
+    for label, status, detail in checks:
+        icon = _PROVIDER_ICONS.get(label, "●")
+        kind = _provider_status_kind(status, tr)
+        dot = "🟢" if kind == "ready" else ("🔴" if kind == "blocked" else "⚪")
+        name = _provider_short_label(label, tr) if compact else label
+        card_html.append(
+            f'<div class="{card_class} cockpit-provider-{kind}">'
+            f'<div class="cockpit-provider-name">{name}</div>'
+            f'<div class="cockpit-provider-detail">{detail or "—"}</div>'
+            f'<div class="cockpit-provider-status">{dot} {status}</div>'
+            f"</div>"
+        )
+    card_html.append("</div>")
+    st.markdown("".join(card_html), unsafe_allow_html=True)
+
+
 def render_provider_center(
     video_source: str,
     voice_name: str,
@@ -2026,35 +2593,14 @@ def render_provider_center(
     *,
     expanded: bool | None = None,
 ) -> None:
-    """Readiness grid with prominent provider cards."""
-    checks = [
-        (tr("Cockpit Provider LLM"), *_llm_readiness(tr)),
-        (tr("Cockpit Provider Collector"), *_collector_readiness(video_source, tr)),
-        (tr("Cockpit Provider TTS"), *_tts_readiness(voice_name, tr)),
-        (tr("Cockpit Provider FFmpeg"), *_ffmpeg_readiness(tr)),
-        (tr("Cockpit Provider BGM"), *_bgm_readiness(tr)),
-    ]
+    """Detailed provider readiness (collapsed by default on main screen)."""
+    checks = _provider_checks(video_source, voice_name, tr)
     if expanded is None:
         blocked_status = tr("Cockpit Status Blocked")
         expanded = any(status == blocked_status for _, status, _ in checks)
 
-    render_section_title(tr("Cockpit Provider Center"))
     with st.expander(tr("Cockpit Provider Center Details"), expanded=expanded):
-        card_html = ['<div class="cockpit-provider-grid">']
-        for label, status, detail in checks:
-            icon = _PROVIDER_ICONS.get(label, "●")
-            kind = _provider_status_kind(status, tr)
-            dot = "🟢" if kind == "ready" else ("🔴" if kind == "blocked" else "⚪")
-            card_html.append(
-                f'<div class="cockpit-provider-card cockpit-provider-{kind}">'
-                f'<div class="cockpit-provider-icon">{icon}</div>'
-                f'<div class="cockpit-provider-name">{label}</div>'
-                f'<div class="cockpit-provider-detail">{detail or "—"}</div>'
-                f'<div class="cockpit-provider-status">{dot} {status}</div>'
-                f"</div>"
-            )
-        card_html.append("</div>")
-        st.markdown("".join(card_html), unsafe_allow_html=True)
+        _render_provider_grid(checks, tr)
 
 
 def render_channels_tab(
@@ -2464,6 +3010,122 @@ def render_tasks_tab(
                 )
 
 
+def persist_cockpit_textarea(session_key: str, widget_value: str) -> str:
+    """Persist textarea edits without wiping AI-generated content on stale widget state."""
+    stored = str(st.session_state.get(session_key, "") or "")
+    incoming = str(widget_value or "")
+    if incoming or not stored:
+        st.session_state[session_key] = incoming
+    return str(st.session_state.get(session_key, "") or "")
+
+
+def _format_generated_terms(terms: Any) -> str:
+    from app.models.schema import NormalizedCollectorKeywords, format_collector_keywords_for_ui
+
+    if isinstance(terms, NormalizedCollectorKeywords):
+        return format_collector_keywords_for_ui(
+            [keyword.model_dump() for keyword in terms.keywords]
+        )
+    return str(terms)
+
+
+def _is_terms_error(terms: Any) -> bool:
+    return isinstance(terms, str) and "Error: " in terms
+
+
+def process_script_generation_triggers(
+    params: Any,
+    tr: Callable[[str], str],
+) -> bool:
+    """Run LLM script/keyword generation before the workspace renders. Returns True if UI should rerun."""
+    from app.services import llm
+    from webui import cockpit_keywords
+
+    updated = False
+    subject = str(st.session_state.get("video_subject") or params.video_subject or "").strip()
+    params.video_subject = subject
+    match_script = bool(st.session_state.get("match_materials_to_script", False))
+    terms_amount = llm.default_terms_amount(match_script)
+
+    if st.session_state.pop("cockpit_trigger_generate_script", False):
+        script_mode = st.session_state.get("script_mode", "auto")
+        if script_mode == "polish":
+            if not str(st.session_state.get("video_script") or params.video_script or "").strip():
+                st.error(tr("Script Mode Polish Brief Required"))
+                return False
+        elif script_mode != "verbatim" and not subject:
+            st.error(tr("Please Enter the Video Subject"))
+            return False
+
+        with st.status(tr("Generating Video Script and Keywords"), expanded=True) as status:
+            if script_mode == "polish":
+                status.write(tr("Cockpit Step Script"))
+                script = llm.polish_script(
+                    brief=str(st.session_state.get("video_script") or params.video_script or "").strip(),
+                    video_subject=subject,
+                    duration_seconds=max(30, int(params.paragraph_number or 1) * 25),
+                    language=params.video_language or "",
+                )
+            elif script_mode == "verbatim" and str(
+                st.session_state.get("video_script") or params.video_script or ""
+            ).strip():
+                script = str(st.session_state.get("video_script") or params.video_script or "").strip()
+            else:
+                status.write(tr("Cockpit Step Script"))
+                script = llm.generate_script(
+                    video_subject=subject,
+                    language=params.video_language,
+                    paragraph_number=params.paragraph_number,
+                    video_script_prompt=params.video_script_prompt,
+                    custom_system_prompt=params.custom_system_prompt,
+                )
+
+            if "Error: " in script:
+                st.error(tr(script))
+                status.update(state="error")
+                return False
+
+            status.write(tr("Cockpit Step Terms"))
+            terms = llm.generate_terms(
+                subject,
+                script,
+                amount=terms_amount,
+                match_script_order=match_script,
+            )
+            if _is_terms_error(terms):
+                st.error(tr(terms))
+                status.update(state="error")
+                return False
+
+            st.session_state["video_script"] = script
+            params.video_script = script
+            cockpit_keywords.set_normalized_video_terms(terms)
+            params.video_terms = cockpit_keywords.payloads_for_params()
+            status.update(state="complete")
+            updated = True
+
+    if st.session_state.pop("cockpit_trigger_generate_keywords", False):
+        script = str(st.session_state.get("video_script") or params.video_script or "").strip()
+        if not script:
+            st.error(tr("Please Enter the Video Subject"))
+            return False
+        with st.spinner(tr("Generating Video Keywords")):
+            terms = llm.generate_terms(
+                subject,
+                script,
+                amount=terms_amount,
+                match_script_order=match_script,
+            )
+            if _is_terms_error(terms):
+                st.error(tr(terms))
+                return False
+            cockpit_keywords.set_normalized_video_terms(terms)
+            params.video_terms = cockpit_keywords.payloads_for_params()
+            updated = True
+
+    return updated
+
+
 def run_preview(
     params: Any,
     include_audio: bool,
@@ -2474,6 +3136,7 @@ def run_preview(
 
     from app.services import llm, voice
     from app.utils import utils
+    from webui import cockpit_keywords
 
     if not params.video_subject and not params.video_script:
         st.error(tr("Video Script and Subject Cannot Both Be Empty"))
@@ -2496,26 +3159,22 @@ def run_preview(
             return False
 
         status.write(tr("Cockpit Step Terms"))
-        amount = 8 if params.match_materials_to_script else 5
+        amount = llm.default_terms_amount(params.match_materials_to_script)
         terms = llm.generate_terms(
             video_subject=params.video_subject,
             video_script=script,
             amount=amount,
             match_script_order=params.match_materials_to_script,
         )
-        from app.models.schema import format_collector_keywords_for_ui
-
-        if isinstance(terms, str):
-            terms_text = terms
-        else:
-            terms_text = format_collector_keywords_for_ui(
-                [keyword.model_dump() for keyword in terms.keywords]
-            )
+        if _is_terms_error(terms):
+            st.error(tr(terms))
+            status.update(state="error")
+            return False
 
         st.session_state["video_script"] = script
-        st.session_state["video_terms"] = terms_text
         params.video_script = script
-        params.video_terms = terms_text
+        cockpit_keywords.set_normalized_video_terms(terms)
+        params.video_terms = cockpit_keywords.payloads_for_params()
 
         if include_audio and not params.custom_audio_file:
             status.write(tr("Cockpit Step TTS"))
@@ -2540,7 +3199,7 @@ def run_preview(
     from datetime import datetime
 
     st.session_state["last_preview_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    st.session_state["cockpit_active_step"] = 4
+    st.session_state["cockpit_active_step"] = 3
     st.success(tr("Cockpit Preview Ready"))
     return True
 
@@ -2550,42 +3209,61 @@ COCKPIT_CSS = """
 /* ── Layout & scale ── */
 section.main .block-container {
     max-width: 100% !important;
-    padding-top: 0.65rem !important;
-    padding-left: 2rem !important;
-    padding-right: 2rem !important;
+    padding-top: 0.35rem !important;
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
 }
 section.main [data-testid="stTabs"] {
-    margin-top: 0.25rem;
+    margin-top: 0.15rem;
 }
 section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
-    gap: 0.35rem;
-    min-height: 2.25rem;
+    gap: 0.25rem;
+    min-height: 2rem;
+}
+section.main [data-testid="stTextInput"] input {
+    min-height: 38px !important;
+    height: 38px !important;
+    padding-top: 0.35rem !important;
+    padding-bottom: 0.35rem !important;
+    font-size: 0.92rem !important;
+}
+section.main [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    min-height: 38px !important;
+}
+section.main button[data-testid="stBaseButton-secondary"] {
+    min-height: 36px !important;
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+}
+section.main [data-testid="stExpander"] summary {
+    min-height: 34px !important;
+    font-size: 0.85rem !important;
 }
 
 /* ── App header (compact) ── */
 .cockpit-app-header {
     margin-bottom: 0;
-    line-height: 1.2;
+    line-height: 1.1;
 }
 .cockpit-app-brand {
-    font-size: 1.65rem;
+    font-size: 1.35rem;
     font-weight: 700;
     letter-spacing: -0.02em;
     color: #f8fafc;
 }
 .cockpit-app-version {
-    font-size: 0.8rem;
+    font-size: 0.72rem;
     color: #64748b;
-    margin-left: 0.5rem;
+    margin-left: 0.4rem;
     font-weight: 500;
 }
 
 /* ── Channel inline ── */
 .cockpit-channel-inline {
-    font-size: 0.95rem;
+    font-size: 0.88rem;
     color: #cbd5e1;
-    padding: 0.35rem 0 0.15rem 0;
-    line-height: 1.35;
+    padding: 0.1rem 0 0.05rem 0;
+    line-height: 1.25;
 }
 .cockpit-channel-inline strong {
     color: #f8fafc;
@@ -2608,51 +3286,77 @@ section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
 
 /* ── Pipeline track ── */
 .cockpit-pipeline-track {
-    margin: 0.65rem 0 1.25rem 0;
+    margin: 0.35rem 0 0.75rem 0;
     display: flex;
 }
 .cockpit-pipeline-track > div[data-testid="stHorizontalBlock"] {
-    gap: 0.35rem;
+    gap: 0.25rem;
     align-items: stretch;
 }
 .cockpit-pipeline-track [data-testid="column"] {
     position: relative;
 }
 .cockpit-pipeline-track [data-testid="column"]:not(:last-child)::after {
-    content: "────";
+    content: "—";
     position: absolute;
-    right: -0.45rem;
+    right: -0.35rem;
     top: 50%;
     transform: translateY(-50%);
     color: #475569;
-    font-size: 0.65rem;
-    letter-spacing: -1px;
+    font-size: 0.6rem;
     z-index: 0;
     pointer-events: none;
-    opacity: 0.85;
+    opacity: 0.7;
 }
 .cockpit-pipeline-track [data-testid="column"] button {
     position: relative;
     z-index: 1;
-    min-height: 52px !important;
-    font-size: 1rem !important;
+    min-height: 38px !important;
+    font-size: 0.82rem !important;
     font-weight: 600 !important;
-    border-radius: 10px !important;
-    padding: 0.5rem 0.65rem !important;
-    background: rgba(15, 23, 42, 0.65) !important;
-    border: 2px solid rgba(71, 85, 105, 0.45) !important;
+    border-radius: 8px !important;
+    padding: 0.25rem 0.45rem !important;
+    background: rgba(15, 23, 42, 0.55) !important;
+    border: 1px solid rgba(71, 85, 105, 0.45) !important;
     white-space: nowrap;
+    color: #94a3b8 !important;
 }
 .cockpit-pipeline-track [data-testid="column"] button[data-testid="stBaseButton-primary"] {
-    border-color: rgba(251, 146, 60, 0.85) !important;
-    background: rgba(251, 146, 60, 0.14) !important;
-    box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.25), 0 4px 16px rgba(251, 146, 60, 0.15) !important;
+    border-color: rgba(239, 68, 68, 0.8) !important;
+    background: rgba(239, 68, 68, 0.12) !important;
+    color: #fecaca !important;
+    box-shadow: none !important;
 }
 .cockpit-pipeline-track [data-testid="column"] button[data-testid="stBaseButton-secondary"] {
-    opacity: 0.9;
+    opacity: 0.95;
 }
 
-/* ── Production header badges ── */
+/* ── Production summary (global) ── */
+.cockpit-prod-summary-box {
+    padding: 0.45rem 0.65rem;
+    margin: 0;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(30, 58, 138, 0.25), rgba(15, 23, 42, 0.75));
+    border: 1px solid rgba(99, 102, 241, 0.25);
+}
+.cockpit-prod-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.6rem;
+    padding: 0.12rem 0;
+    font-size: 0.84rem;
+    line-height: 1.35;
+}
+.cockpit-prod-line-label {
+    color: #94a3b8;
+    font-weight: 600;
+    min-width: 4.5rem;
+}
+.cockpit-prod-line-value {
+    color: #e2e8f0;
+    font-weight: 500;
+}
+/* ── Legacy production badges (channels tab etc.) ── */
 .cockpit-prod-header {
     display: flex;
     flex-wrap: wrap;
@@ -2679,9 +3383,9 @@ section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
 }
 .cockpit-badge {
     display: inline-block;
-    padding: 0.35rem 0.7rem;
+    padding: 0.2rem 0.5rem;
     border-radius: 999px;
-    font-size: 0.9rem;
+    font-size: 0.78rem;
     font-weight: 600;
     color: #e2e8f0;
     background: rgba(51, 65, 85, 0.65);
@@ -2722,30 +3426,96 @@ section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
     font-size: 0.95rem !important;
 }
 .cockpit-context-panel {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.55rem;
 }
 .cockpit-context-panel-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 0.35rem;
+}
+.cockpit-context-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+.cockpit-ctx-chip-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.18rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    background: rgba(30, 41, 59, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+}
+.cockpit-ctx-chip-inline-label {
+    color: #94a3b8;
+    font-weight: 600;
+}
+.cockpit-ctx-chip-inline-value {
+    color: #e2e8f0;
+    font-weight: 500;
+}
+.cockpit-context-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+.cockpit-context-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+.cockpit-context-label {
+    font-size: 0.85rem;
+    color: #94a3b8;
+    flex-shrink: 0;
+}
+.cockpit-context-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    text-align: right;
+    word-break: break-word;
+}
+.cockpit-inspector-summary {
+    margin-top: 0.85rem;
+    padding: 0.75rem 0.85rem;
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.45);
+    border: 1px solid rgba(148, 163, 184, 0.15);
+}
+.cockpit-inspector-summary-title {
     font-size: 0.8rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #64748b;
-    margin-bottom: 0.55rem;
+    margin-bottom: 0.45rem;
+}
+.cockpit-inspector-summary .cockpit-context-row:last-child {
+    border-bottom: none;
 }
 .cockpit-context-badges {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.45rem;
+    gap: 0.35rem;
 }
 .cockpit-ctx-chip {
     display: inline-flex;
     flex-direction: column;
     gap: 0.1rem;
-    padding: 0.4rem 0.65rem;
+    padding: 0.3rem 0.55rem;
     border-radius: 8px;
     background: rgba(30, 41, 59, 0.55);
     border: 1px solid rgba(148, 163, 184, 0.18);
-    min-width: 4.5rem;
+    min-width: 4rem;
 }
 .cockpit-ctx-chip-label {
     font-size: 0.68rem;
@@ -2760,6 +3530,7 @@ section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
     color: #f1f5f9;
     line-height: 1.25;
 }
+
 
 /* ── Provider cards ── */
 .cockpit-provider-grid {
@@ -2819,40 +3590,90 @@ section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
 .cockpit-provider-blocked .cockpit-provider-status { color: #f87171; }
 .cockpit-provider-skipped .cockpit-provider-status { color: #94a3b8; }
 
+/* ── Provider cards (compact, side-by-side with production summary) ── */
+.cockpit-provider-grid-compact {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+    gap: 0.5rem;
+    margin: 0;
+}
+.cockpit-provider-card-compact {
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 8px;
+    padding: 0.5rem 0.6rem;
+    background: rgba(30, 41, 59, 0.5);
+    display: flex;
+    flex-direction: column;
+    transition: border-color 0.15s ease;
+}
+.cockpit-provider-card-compact .cockpit-provider-icon {
+    font-size: 1.05rem;
+    margin-bottom: 0.15rem;
+}
+.cockpit-provider-card-compact .cockpit-provider-name {
+    font-size: 0.6rem;
+    margin-bottom: 0.05rem;
+}
+.cockpit-provider-card-compact .cockpit-provider-detail {
+    font-size: 0.72rem;
+    margin-bottom: 0.15rem;
+    padding-bottom: 0;
+    word-break: break-word;
+}
+.cockpit-provider-card-compact .cockpit-provider-status {
+    font-size: 0.68rem;
+    margin-top: 0;
+}
+
 /* ── Document workspace (left column) ── */
 .cockpit-doc-workspace {
     padding-right: 0.5rem;
 }
 .cockpit-doc-stage {
-    margin-bottom: 0.85rem;
+    margin-bottom: 0.45rem;
 }
 .cockpit-doc-title {
-    font-size: 1.55rem;
+    font-size: 1.35rem;
     font-weight: 700;
     letter-spacing: -0.02em;
     color: #f8fafc;
-    padding-bottom: 0.55rem;
+    padding-bottom: 0.35rem;
     border-bottom: 2px solid rgba(99, 102, 241, 0.45);
 }
 .cockpit-doc-divider {
     height: 1px;
-    margin: 1.35rem 0;
+    margin: 0.75rem 0;
     background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.35), transparent);
 }
+.cockpit-doc-content-section {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: #cbd5e1;
+    margin-bottom: 0.3rem;
+}
 .cockpit-doc-section-label {
-    font-size: 0.78rem;
-    font-weight: 800;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
-    color: #64748b;
-    margin-bottom: 0.55rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: #94a3b8;
+    margin-bottom: 0.45rem;
 }
 .cockpit-doc-workspace [data-testid="stTextArea"] textarea {
-    min-height: 420px !important;
     font-size: 16px !important;
     line-height: 1.55 !important;
     border: 1px solid rgba(148, 163, 184, 0.2) !important;
     background: rgba(15, 23, 42, 0.35) !important;
+}
+.cockpit-doc-keywords-field [data-testid="stTextArea"] textarea {
+    min-height: 72px !important;
+    max-height: 110px !important;
+    font-size: 0.92rem !important;
+}
+.cockpit-script-actions {
+    margin: 0.15rem 0 0.55rem 0;
+}
+.cockpit-script-actions button[data-testid="stBaseButton-primary"] {
+    font-weight: 700 !important;
 }
 .cockpit-doc-workspace [data-testid="stTextInput"] input {
     border: 1px solid rgba(148, 163, 184, 0.2) !important;
@@ -2861,8 +3682,8 @@ section.main [data-testid="stTabs"] [data-baseweb="tab-list"] {
 
 /* ── Important secondary buttons ── */
 .cockpit-btn-important button[data-testid="stBaseButton-secondary"] {
-    min-height: 46px !important;
-    font-size: 0.95rem !important;
+    min-height: 36px !important;
+    font-size: 0.88rem !important;
     font-weight: 700 !important;
     border-color: rgba(129, 140, 248, 0.55) !important;
     background: rgba(99, 102, 241, 0.12) !important;
@@ -3033,11 +3854,9 @@ section.main [data-testid="stExpander"] summary:hover {
 
 def _default_active_step() -> int:
     if st.session_state.get("last_render_task_id"):
-        return 5
-    if st.session_state.get("preview_ready"):
         return 4
-    if st.session_state.get("video_script"):
-        return 1
+    if st.session_state.get("preview_ready"):
+        return 3
     return 0
 
 

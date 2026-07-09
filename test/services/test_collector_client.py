@@ -105,7 +105,9 @@ class TestCollectorClient(unittest.TestCase):
         self.assertEqual(result.selected_clips_count, 0)
         self.assertEqual(result.selected_clips, [])
         self.assertEqual(post.call_args.args[0], "http://collector:8001/stock/jobs")
-        self.assertEqual(post.call_args.kwargs["json"]["client_task_id"], "mpt_123")
+        posted = post.call_args.kwargs["json"]
+        self.assertEqual(posted["client_task_id"], "mpt_123")
+        self.assertEqual(posted["keywords"], ["tokyo street"])
 
     def test_create_stock_job_normalizes_collector_api_shape(self):
         config.app["collector_base_url"] = "http://collector:8001"

@@ -235,7 +235,7 @@ def create_stock_job(payload: CollectorJobRequest | dict) -> CollectorJobResult:
     body = _request_collector(
         "POST",
         "/stock/jobs",
-        json_payload=payload.model_dump(),
+        json_payload=payload.to_collector_api(),
         expected_statuses=(200, 201, 202),
     )
     if not isinstance(body, dict):

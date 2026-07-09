@@ -62,6 +62,34 @@ class MaterialInfo:
 class CollectorKeyword(BaseModel):
     term: str
     weight: float = Field(default=1.0, ge=0.0, le=1.0)
+    visual_intent: str = ""
+    alternatives: List[str] = Field(default_factory=list)
+    required_concepts: List[str] = Field(default_factory=list)
+    optional_concepts: List[str] = Field(default_factory=list)
+
+
+_MAX_ALTERNATIVES = 6
+_MAX_VISUAL_INTENT_CHARS = 300
+
+
+def _coerce_string_list(value: Any, limit: int | None = None) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
 
 
 class CollectorChannelConfig(BaseModel):
@@ -76,6 +104,25 @@ class NormalizedCollectorKeywords(BaseModel):
 
 DEFAULT_COLLECTOR_TARGET_CLIPS = 25
 DEFAULT_COLLECTOR_MIN_ACCEPTABLE_CLIPS = 20
+
+_WEIGHTED_UI_TERM_RE = re.compile(
+    r"^(?P<term>.+?)\s*\((?P<weight>\d+(?:\.\d+)?)\)\s*$"
+)
+
+
+def _parse_keyword_token(token: str) -> tuple[CollectorKeyword, bool]:
+    raw = str(token or "").strip()
+    if not raw:
+        raise ValueError("empty keyword token")
+    match = _WEIGHTED_UI_TERM_RE.match(raw)
+    if not match:
+        return CollectorKeyword(term=raw, weight=1.0, required_concepts=raw.split()), False
+    term = match.group("term").strip()
+    weight = max(0.0, min(1.0, float(match.group("weight"))))
+    return (
+        CollectorKeyword(term=term, weight=weight, required_concepts=term.split()),
+        True,
+    )
 
 
 def resolve_collector_clip_limits(
@@ -113,6 +160,7 @@ def normalize_collector_keywords(
         raise ValueError("video_terms must be a string or a list of keywords.")
 
     keywords: list[CollectorKeyword] = []
+    explicit_from_string = False
     for item in items:
         if isinstance(item, CollectorKeyword):
             term = item.term.strip()
@@ -127,13 +175,38 @@ def normalize_collector_keywords(
                 weight = float(item.get("weight", 1.0))
             except (TypeError, ValueError):
                 weight = 1.0
+            visual_intent = str(item.get("visual_intent", "") or "").strip()[
+                :_MAX_VISUAL_INTENT_CHARS
+            ]
+            alternatives = _coerce_string_list(
+                item.get("alternatives"), limit=_MAX_ALTERNATIVES
+            )
+            required_concepts = _coerce_string_list(item.get("required_concepts"))
+            if not required_concepts:
+                # Compat fallback for legacy {term, weight}-only payloads.
+                required_concepts = term.split()
+            optional_concepts = _coerce_string_list(item.get("optional_concepts"))
             keywords.append(
-                CollectorKeyword(term=term, weight=max(0.0, min(1.0, weight)))
+                CollectorKeyword(
+                    term=term,
+                    weight=max(0.0, min(1.0, weight)),
+                    visual_intent=visual_intent,
+                    alternatives=alternatives,
+                    required_concepts=required_concepts,
+                    optional_concepts=optional_concepts,
+                )
             )
             continue
-        term = str(item).strip()
-        if term:
-            keywords.append(CollectorKeyword(term=term, weight=1.0))
+        try:
+            keyword, weighted = _parse_keyword_token(str(item))
+        except ValueError:
+            continue
+        if keyword.term:
+            keywords.append(keyword)
+            explicit_from_string = explicit_from_string or weighted
+
+    if isinstance(raw_terms, str) and explicit_from_string:
+        has_explicit_weights = True
 
     return NormalizedCollectorKeywords(
         keywords=keywords,
@@ -187,6 +260,15 @@ class CollectorJobRequest(BaseModel):
     keywords: List[CollectorKeyword]
     target_clips: int = Field(default=25, ge=1)
     min_acceptable_clips: int = Field(default=20, ge=1)
+
+    def to_collector_api(self) -> dict:
+        """Serialize for Stock-Video-Collector POST /stock/jobs (keywords as strings)."""
+        return {
+            "client_task_id": self.client_task_id,
+            "keywords": collector_keywords_to_strings(self.keywords),
+            "target_clips": self.target_clips,
+            "min_acceptable_clips": self.min_acceptable_clips,
+        }
 
 
 class CollectorJobResult(BaseModel):

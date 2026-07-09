@@ -1,4 +1,4 @@
-"""Cross-platform video publishing via Upload-Post."""
+"""Cross-platform video publishing via Upload-Post or Zernio."""
 
 from __future__ import annotations
 
@@ -6,9 +6,26 @@ from typing import Optional
 
 from loguru import logger
 
-from app.services import llm, upload_post
+from app.config import config
+from app.services import llm, upload_post, zernio
 
 DEFAULT_FALLBACK_TITLE = "Check out this video! #shorts #viral"
+
+
+def get_backend_name() -> str:
+    """Publish backend selected in config: "upload_post" (default) or "zernio"."""
+    return str(config.app.get("publish_backend", "upload_post")).strip().lower()
+
+
+def _get_backend():
+    """Return the active backend module (upload_post or zernio)."""
+    return zernio if get_backend_name() == "zernio" else upload_post
+
+
+def get_active_service():
+    """Return the active backend's service singleton."""
+    backend = _get_backend()
+    return zernio.zernio_service if backend is zernio else upload_post.upload_post_service
 
 # Upload-Post platform slug -> LLM metadata platform key
 PLATFORM_TO_LLM = {
@@ -94,10 +111,18 @@ def cross_post_videos(
 
     Returns a list of API result dicts (one per video path).
     """
-    service = upload_post.upload_post_service
+    backend_name = get_backend_name()
+    service = get_active_service()
     if not service.is_configured():
-        logger.warning("Upload-Post is not configured. Skipping cross-post.")
-        return [{"success": False, "error": "Upload-Post not configured"}]
+        logger.warning(
+            f"Publish backend '{backend_name}' is not configured. Skipping cross-post."
+        )
+        return [
+            {
+                "success": False,
+                "error": f"Publish backend '{backend_name}' not configured",
+            }
+        ]
 
     if platforms is None:
         platforms = list(service.platforms)
@@ -114,9 +139,10 @@ def cross_post_videos(
         youtube_extra = build_youtube_extra(subject, script, language, privacy)
 
     title = _resolve_post_title(platforms, subject, script, language)
+    backend = _get_backend()
     results: list[dict] = []
     for video_path in video_paths:
-        result = upload_post.cross_post_video(
+        result = backend.cross_post_video(
             video_path=video_path,
             title=title,
             platforms=platforms,
@@ -140,7 +166,7 @@ def cross_post_if_auto_upload(
     publish_platforms: Optional[list[str]] = None,
 ) -> list[dict]:
     """Run cross-post after render when global auto_upload is enabled."""
-    service = upload_post.upload_post_service
+    service = get_active_service()
     if not service.is_configured() or not service.auto_upload:
         return []
     platforms = publish_platforms if publish_platforms is not None else None

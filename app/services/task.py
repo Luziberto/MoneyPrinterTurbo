@@ -7,7 +7,6 @@ from loguru import logger
 from app.config import config
 from app.models import const
 from app.models.schema import (
-    CollectorKeyword,
     CollectorSelectedClip,
     VideoConcatMode,
     VideoParams,
@@ -76,7 +75,7 @@ def generate_terms(task_id, params, video_script):
         generated = llm.generate_terms(
             video_subject=params.video_subject,
             video_script=video_script,
-            amount=8 if params.match_materials_to_script else 5,
+            amount=llm.default_terms_amount(params.match_materials_to_script),
             match_script_order=params.match_materials_to_script,
         )
         if isinstance(generated, str):
@@ -97,17 +96,13 @@ def generate_terms(task_id, params, video_script):
         reranked_terms = twelvelabs.rerank_terms_by_subject(
             params.video_subject, collector_keywords_to_strings(video_terms)
         )
-        weights_by_term = {
-            keyword["term"]: keyword["weight"]
+        packages_by_term = {
+            keyword["term"]: keyword
             for keyword in video_terms
             if isinstance(keyword, dict) and keyword.get("term")
         }
         video_terms = [
-            CollectorKeyword(
-                term=term,
-                weight=weights_by_term.get(term, 1.0),
-            ).model_dump()
-            for term in reranked_terms
+            packages_by_term[term] for term in reranked_terms if term in packages_by_term
         ]
 
     if not video_terms:

@@ -1,4 +1,4 @@
-"""Resolve per-channel publish targets for Upload-Post."""
+"""Resolve per-channel publish targets for the active publish backend."""
 
 from __future__ import annotations
 
@@ -8,6 +8,21 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 UPLOAD_POST_SUPPORTED = frozenset({"youtube", "tiktok", "instagram"})
+ZERNIO_SUPPORTED = frozenset({"youtube", "tiktok", "instagram", "facebook"})
+
+
+def publish_backend_name() -> str:
+    """Active publish backend from config ("upload_post" default)."""
+    try:
+        from app.config import config
+    except ImportError:
+        return "upload_post"
+    return str(config.app.get("publish_backend", "upload_post")).strip().lower()
+
+
+def supported_platforms(backend: str | None = None) -> frozenset:
+    backend = backend or publish_backend_name()
+    return ZERNIO_SUPPORTED if backend == "zernio" else UPLOAD_POST_SUPPORTED
 
 PLATFORM_ALIASES = {
     "youtube_shorts": "youtube",
@@ -29,8 +44,38 @@ def normalize_platform(name: str) -> str:
 USE_CHANNEL_PUBLISH_PROFILES = False
 
 
+def _resolve_zernio_config_platforms() -> tuple[list[str], list[dict[str, str]], str]:
+    """Zernio reads zernio_* keys and allows every supported platform."""
+    try:
+        from app.services.zernio import _zernio_setting
+    except ImportError:
+        return ["youtube"], [], "unlisted"
+
+    raw = _zernio_setting("zernio_platforms", ["tiktok", "youtube"]) or [
+        "tiktok",
+        "youtube",
+    ]
+    platforms: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for item in raw:
+        platform = normalize_platform(str(item))
+        if platform in ZERNIO_SUPPORTED:
+            if platform not in platforms:
+                platforms.append(platform)
+        elif platform:
+            skipped.append({"platform": platform, "reason": "unsupported by Zernio"})
+            logger.warning("Skipping platform %r: unsupported by Zernio", platform)
+    if not platforms:
+        platforms = ["youtube"]
+    privacy = str(_zernio_setting("zernio_youtube_privacy_status", "unlisted"))
+    return platforms, skipped, privacy
+
+
 def resolve_config_publish_platforms() -> tuple[list[str], list[dict[str, str]], str]:
-    """Resolve platforms from global config; Etapa 1 restricts to YouTube only."""
+    """Resolve platforms from global config; Etapa 1 (Upload-Post) restricts to YouTube only."""
+    if publish_backend_name() == "zernio":
+        return _resolve_zernio_config_platforms()
+
     try:
         from app.services.upload_post import _upload_post_setting
     except ImportError:
@@ -59,6 +104,8 @@ def resolve_publish_platforms(
     ``youtube_privacy_status`` is taken from the enabled YouTube profile when set;
   otherwise callers should fall back to global config.
     """
+    backend = publish_backend_name()
+    supported = supported_platforms(backend)
     profiles = channel_config.get("publish_profiles")
     if isinstance(profiles, list) and profiles:
         platforms: list[str] = []
@@ -70,14 +117,14 @@ def resolve_publish_platforms(
             platform = normalize_platform(str(profile.get("platform", "")))
             if not profile.get("enabled", False):
                 continue
-            if platform in UPLOAD_POST_SUPPORTED:
+            if platform in supported:
                 platforms.append(platform)
                 if platform == "youtube" and profile.get("privacy_status"):
                     youtube_privacy = str(profile["privacy_status"])
                 continue
             if platform:
                 reason = str(
-                    profile.get("note") or "unsupported by Upload-Post"
+                    profile.get("note") or f"unsupported by {backend}"
                 )
                 skipped.append({"platform": platform, "reason": reason})
                 logger.warning(
@@ -92,17 +139,18 @@ def resolve_publish_platforms(
     skipped = []
     for raw in targets:
         platform = normalize_platform(str(raw))
-        if platform in UPLOAD_POST_SUPPORTED:
+        if platform in supported:
             platforms.append(platform)
         elif platform:
             skipped.append(
                 {
                     "platform": platform,
-                    "reason": "unsupported by Upload-Post (legacy platform_targets)",
+                    "reason": f"unsupported by {backend} (legacy platform_targets)",
                 }
             )
             logger.warning(
-                "Skipping legacy platform_targets entry %r: unsupported by Upload-Post",
+                "Skipping legacy platform_targets entry %r: unsupported by %s",
                 platform,
+                backend,
             )
     return platforms, skipped, None

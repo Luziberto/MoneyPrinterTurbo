@@ -28,7 +28,7 @@ venv/
 .venv
 
 # Debug and test files
-CLAUDE.md
+/CLAUDE.md
 debug/
 debug_*.py
 test_*.py
@@ -40,6 +40,14 @@ streamlit.log
 .codegraph
 /docs/superpowers
 .understand-anything
+
+# Claude Code — local only
+.claude/settings.local.json
+.claude/settings.json
+.claude/worktrees/
+
+# Graphify — local only
+graphify-out/cost.json
 
 # Pipeline runtime artifacts
 pipeline/runs/

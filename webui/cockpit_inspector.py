@@ -43,9 +43,7 @@ def render_stage_inspector(
         st.caption(tr("Cockpit Inspector Unavailable"))
         return uploaded_files, uploaded_audio_file
 
-    if step_id == "idea":
-        render_inspector_idea(params, runtime, tr, callbacks)
-    elif step_id == "script":
+    if step_id == "script":
         render_inspector_script(params, runtime, tr, callbacks)
     elif step_id == "collector":
         uploaded_files = render_inspector_media(params, runtime, tr, callbacks)
@@ -53,31 +51,12 @@ def render_stage_inspector(
         uploaded_audio_file = render_inspector_voice(params, runtime, tr, callbacks)
     elif step_id == "render":
         render_inspector_subtitles(params, runtime, tr, callbacks)
+    elif step_id == "publish":
+        render_inspector_publish(params, runtime, tr)
     elif step_id == "result":
         render_inspector_result(params, runtime, tr)
 
     return uploaded_files, uploaded_audio_file
-
-
-def render_inspector_idea(
-    params: Any,
-    runtime: dict[str, Any],
-    tr: Callable[[str], str],
-    callbacks: InspectorCallbacks,
-) -> None:
-    from app.config import config
-
-    provider = str(config.app.get("llm_provider") or "—")
-    st.caption(f"{tr('LLM Settings')}: {provider}")
-    if provider == "litellm":
-        st.caption(config.app.get("litellm_model_name", "—"))
-    elif provider == "bedrock":
-        st.caption(config.app.get("bedrock_model_name", "—"))
-    elif provider == "anthropic":
-        st.caption(config.app.get("anthropic_model_name", "—"))
-    else:
-        model_key = f"{provider}_model_name"
-        st.caption(str(config.app.get(model_key) or config.app.get("text_llm_model") or "—"))
 
 
 def render_inspector_script(
@@ -86,7 +65,10 @@ def render_inspector_script(
     tr: Callable[[str], str],
     callbacks: InspectorCallbacks,
 ) -> None:
-    from app.services import llm
+    model = cockpit._humanize_model_label(cockpit._resolve_llm_model_label())
+    cockpit._render_context_rows([(tr("Cockpit Summary Model"), model)])
+
+    cockpit.render_title_overlay_controls(params, runtime, tr)
 
     params.paragraph_number = st.slider(
         tr("Script Paragraph Number"),
@@ -137,13 +119,7 @@ def render_inspector_script(
     )
     cockpit.render_inheritance_badge("paragraph_number_input", tr)
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button(tr("Cockpit Generate Script"), key="inspector_gen_script", use_container_width=True):
-            st.session_state["cockpit_trigger_generate_script"] = True
-    with col_b:
-        if st.button(tr("Cockpit Generate Keywords"), key="inspector_gen_keywords", use_container_width=True):
-            st.session_state["cockpit_trigger_generate_keywords"] = True
+    cockpit.render_script_stage_summary(params, runtime, tr)
 
 
 def render_inspector_media(
@@ -477,6 +453,37 @@ def render_inspector_subtitles(
     cockpit.render_subtitle_controls(
         params, tr, callbacks.get_all_fonts, compact=True
     )
+
+
+def render_inspector_publish(
+    params: Any,
+    runtime: dict[str, Any],
+    tr: Callable[[str], str],
+) -> None:
+    from app.services import publish as publish_service
+
+    platforms, _, privacy = cockpit.resolve_cockpit_publish_platforms(runtime)
+    backend = publish_service.get_backend_name()
+    configured = publish_service.get_active_service().is_configured()
+    cockpit._render_context_rows([
+        (tr("Cockpit Publish Backend"), backend),
+        (tr("Cockpit Publish Platforms"), ", ".join(platforms) or "—"),
+        (
+            tr("Cockpit Publish Status"),
+            tr("Cockpit Status Ready") if configured else tr("Cockpit Status Blocked"),
+        ),
+        (tr("Cockpit Publish YouTube Privacy"), privacy or "—"),
+    ])
+    if publish_service.get_backend_name() == "zernio":
+        from app.config import config
+
+        consent = bool(config.app.get("zernio_tiktok_consent", False))
+        cockpit._render_context_rows([
+            (
+                tr("Cockpit Publish TikTok Consent"),
+                tr("Yes") if consent else tr("No"),
+            ),
+        ])
 
 
 def render_inspector_result(

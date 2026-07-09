@@ -25,7 +25,7 @@
     },
     {
       "platform": "tiktok",
-      "enabled": false
+      "enabled": true
     },
     {
       "platform": "instagram",

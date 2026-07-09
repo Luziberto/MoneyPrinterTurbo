@@ -93,6 +93,14 @@ collector_min_screen_duration = 1.5
 collector_enable_legacy_fallback = false
 collector_fallback_source = "stock"
 
+# Video search terms (llm.generate_terms) ###################################
+# Overrides the default term count (8 when match_materials_to_script, else 5).
+terms_amount = 8
+# "visual_package" (default): term + weight + visual_intent + alternatives +
+# required_concepts + optional_concepts per item. "simple": legacy term+weight
+# only — lighter prompt/response, use for weaker LLMs (e.g. small local models).
+terms_output_mode = "visual_package"
+
 # Local background music library grouped by profile.
 # Can also be overridden with environment variable BGM_PROFILE_MUSIC_DIR.
 bgm_profile_music_dir = "pipeline/assets/music"
@@ -500,6 +508,42 @@ upload_post_auto_upload = false
 
 # YouTube Shorts privacy status (options: "public", "unlisted", "private")
 upload_post_youtube_privacy_status = "unlisted"
+
+########## Publish backend selection
+# Cross-post backend used by publish flows: "upload_post" (default) or "zernio"
+publish_backend = "upload_post"
+
+########## Zernio (Cross-post to TikTok/Instagram/YouTube Shorts)
+# Zernio (https://zernio.com, docs at https://docs.zernio.com) is a unified
+# social posting API; the free tier includes 2 connected accounts with
+# unlimited posts (TikTok included). OAuth happens in the Zernio dashboard.
+
+# Enable/disable Zernio integration
+zernio_enabled = false
+
+# Your Zernio API key (Bearer sk_...)
+zernio_api_key = ""
+
+# Platforms to cross-post to (options: "tiktok", "instagram", "youtube", "facebook")
+zernio_platforms = ["tiktok", "youtube"]
+
+# Automatically cross-post videos after generation
+zernio_auto_upload = false
+
+# YouTube Shorts privacy status (options: "public", "unlisted", "private")
+zernio_youtube_privacy_status = "unlisted"
+
+# Optional explicit account mapping; when empty, accounts are auto-discovered
+# via GET /v1/accounts. e.g. zernio_account_ids = { tiktok = "acc_...", youtube = "acc_..." }
+zernio_account_ids = {}
+
+# TikTok legal consent flags (content_preview_confirmed / express_consent_given).
+# Setting true means you give express consent to automated TikTok publishing.
+zernio_tiktok_consent = false
+
+# TikTok privacy level; must match what the connected account allows
+# (options: "PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "SELF_ONLY")
+zernio_tiktok_privacy_level = "PUBLIC_TO_EVERYONE"
 
 # Chatterbox TTS (self-hosted, OpenAI-compatible) ##########################
 # Chatterbox (https://github.com/resemble-ai/chatterbox, MIT) is an open-source,

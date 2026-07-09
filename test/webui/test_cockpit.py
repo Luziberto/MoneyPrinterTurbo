@@ -208,15 +208,20 @@ class TestCockpitHelpers(unittest.TestCase):
         self.assertEqual(st.session_state.get("active_channel"), "japao")
 
     def test_pipeline_step_labels_has_six_steps(self):
+        """Idea was merged into Script (same subject+language briefing action)."""
         labels = cockpit.pipeline_step_labels(lambda key: key)
         self.assertEqual(len(labels), 6)
         self.assertEqual(cockpit.PIPELINE_STEP_COUNT, 6)
+        self.assertIn("Cockpit Step Script", labels)
+        self.assertIn("Cockpit Step Publish", labels)
+        self.assertNotIn("idea", cockpit.STEP_IDS)
 
-    def test_compute_pipeline_step_states_marks_idea_done(self):
+    def test_compute_pipeline_step_states_marks_script_done(self):
         import streamlit as st
 
         st.session_state.clear()
-        st.session_state["video_subject"] = "Hotéis cápsula"
+        st.session_state["cockpit_active_step"] = 5
+        st.session_state["video_script"] = "Roteiro pronto"
         states = cockpit.compute_pipeline_step_states(video_source="collector")
         self.assertEqual(states[0], "done")
 
@@ -241,6 +246,26 @@ class TestCockpitHelpers(unittest.TestCase):
     def test_count_keywords_helper(self):
         self.assertEqual(cockpit._count_keywords("a, b, c"), 3)
         self.assertEqual(cockpit._count_keywords(""), 0)
+
+    def test_script_word_count_and_display(self):
+        self.assertEqual(cockpit._script_word_count("one two three"), 3)
+        self.assertEqual(cockpit._script_word_count(""), 0)
+        self.assertEqual(cockpit._parse_target_words_max("120-180"), 180)
+        display = cockpit._format_script_words_display(
+            85,
+            "120-180",
+            lambda key: "{current} / {maximum} words" if "Progress" in key else "{count} words",
+        )
+        self.assertEqual(display, "85 / 180 words")
+        empty = cockpit._format_script_words_display(0, "", lambda key: "")
+        self.assertEqual(empty, "")
+
+    def test_humanize_model_and_channel_label(self):
+        self.assertEqual(cockpit._humanize_model_label("claude-sonnet-4-5-20250929"), "Claude Sonnet")
+        self.assertEqual(
+            cockpit._short_channel_label("Curiosidades do Japão", "japao"),
+            "japao",
+        )
 
 
 if __name__ == "__main__":

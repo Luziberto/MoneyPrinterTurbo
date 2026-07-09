@@ -193,7 +193,6 @@ def cmd_publish(channel: str, topic_id: int, store: TopicStore) -> int:
         resolve_publish_platforms,
     )
     from app.services import publish as publish_service  # noqa: E402
-    from app.services import upload_post  # noqa: E402
 
     topic = store.find_by_id(channel, topic_id)
     if not topic:
@@ -201,7 +200,7 @@ def cmd_publish(channel: str, topic_id: int, store: TopicStore) -> int:
         return 1
 
     config = load_channel(channel)
-    if USE_CHANNEL_PUBLISH_PROFILES:
+    if USE_CHANNEL_PUBLISH_PROFILES or publish_service.get_backend_name() == "zernio":
         platforms, skipped, youtube_privacy = resolve_publish_platforms(config)
     else:
         platforms, skipped, youtube_privacy = resolve_config_publish_platforms()
@@ -218,9 +217,11 @@ def cmd_publish(channel: str, topic_id: int, store: TopicStore) -> int:
             )
         return 1
 
-    if not upload_post.upload_post_service.is_configured():
+    backend_name = publish_service.get_backend_name()
+    if not publish_service.get_active_service().is_configured():
         print(
-            "Upload-Post is not configured. Set upload_post_* in config.toml.",
+            f"Publish backend '{backend_name}' is not configured. "
+            f"Set {backend_name}_* in config.toml.",
             file=sys.stderr,
         )
         return 1

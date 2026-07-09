@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import requests
-from typing import List, Union
+from typing import List, Optional, Union
 
 from loguru import logger
 from openai import AzureOpenAI, OpenAI
@@ -1202,29 +1202,164 @@ Weight rules:
 - Weights are relative; they do not need to sum to 1.0.
 """.strip()
 
+_VISUAL_PACKAGE_OUTPUT_RULES = """
+Return only a JSON array of objects with this shape:
+[
+  {
+    "term": "main visual topic",
+    "weight": 1.0,
+    "visual_intent": "short editorial sentence explaining this shot, in the same language as the video script",
+    "alternatives": ["alt search phrase 1", "alt search phrase 2"],
+    "required_concepts": ["must-appear", "concept"],
+    "optional_concepts": ["nice-to-have", "context"]
+  }
+]
+
+Field rules:
+- term: 1-5 words, English, stock-footage-friendly.
+- weight must be between 0.0 and 1.0 (1.0 = primary editorial keyword, 0.7-0.9 = strong supporting visuals, 0.4-0.6 = optional B-roll / context).
+- visual_intent: one short sentence, in the same language as the video script, explaining why this visual matters for the narration.
+- alternatives: 2-4 alternative English stock-search phrases for the same shot.
+- required_concepts: English words/phrases that MUST be visible for the clip to match.
+- optional_concepts: extra English words/phrases that enrich the match but are not mandatory.
+- Avoid overly abstract concepts in term/required_concepts (see Bad examples).
+- Weights are relative; they do not need to sum to 1.0.
+
+Good example:
+{
+  "term": "Japanese children cleaning classroom",
+  "weight": 1.0,
+  "visual_intent": "Mostrar crianças japonesas limpando a sala de aula, conectando limpeza urbana à educação cultural.",
+  "alternatives": ["students cleaning classroom Japan", "Japanese school cleaning", "children cleaning school"],
+  "required_concepts": ["Japanese", "children", "cleaning", "classroom"],
+  "optional_concepts": ["school", "students", "education"]
+}
+
+Bad example (too abstract, do not do this):
+{ "term": "Japanese culture" }
+""".strip()
+
+
+_DEFAULT_SIMPLE_OUTPUT_EXAMPLE = json.dumps(
+    [
+        {"term": "Tokyo street", "weight": 1.0},
+        {"term": "Japan train station", "weight": 0.85},
+        {"term": "Japanese neighborhood", "weight": 0.75},
+        {"term": "People using vending machines", "weight": 0.65},
+        {"term": "Japanese countryside", "weight": 0.5},
+    ],
+    ensure_ascii=False,
+    indent=2,
+)
+
+_DEFAULT_OUTPUT_EXAMPLE = json.dumps(
+    [
+        {
+            "term": "Tokyo street",
+            "weight": 1.0,
+            "visual_intent": "Estabelece o cenário urbano principal do vídeo.",
+            "alternatives": ["Tokyo city street", "busy street Japan"],
+            "required_concepts": ["Tokyo", "street"],
+            "optional_concepts": ["people walking", "urban"],
+        },
+        {
+            "term": "Japan train station",
+            "weight": 0.85,
+            "visual_intent": "Reforça o contexto de mobilidade urbana japonesa.",
+            "alternatives": ["Japanese train platform", "commuter station Japan"],
+            "required_concepts": ["Japan", "train station"],
+            "optional_concepts": ["commuters", "platform"],
+        },
+        {
+            "term": "Japanese neighborhood",
+            "weight": 0.75,
+            "visual_intent": "Mostra o cotidiano do bairro para dar contexto residencial.",
+            "alternatives": ["residential street Japan", "quiet Japanese street"],
+            "required_concepts": ["Japanese", "neighborhood"],
+            "optional_concepts": ["houses", "residential"],
+        },
+    ],
+    ensure_ascii=False,
+    indent=2,
+)
+
+
+def default_terms_amount(match_script_order: bool) -> int:
+    """Default number of terms to generate, overridable via terms_amount in config.toml."""
+    fallback = 8 if match_script_order else 5
+    return int(config.app.get("terms_amount", fallback))
+
 
 def generate_terms(
     video_subject: str,
     video_script: str,
     amount: int = 5,
     match_script_order: bool = False,
+    terms_output_mode: Optional[str] = None,
 ) -> Union[NormalizedCollectorKeywords, str]:
+    mode = str(
+        terms_output_mode or config.app.get("terms_output_mode", "visual_package")
+    ).strip().lower()
+    if mode not in ("simple", "visual_package"):
+        mode = "visual_package"
+    output_rules = (
+        _VISUAL_PACKAGE_OUTPUT_RULES if mode == "visual_package" else _WEIGHTED_TERMS_OUTPUT_RULES
+    )
+
     if match_script_order:
-        goal = (
-            f"Generate {amount} chronological stock-video search terms that follow "
-            "the order of topics in the video script."
-        )
+        if mode == "visual_package":
+            goal = (
+                f"Generate {amount} chronological stock-video search packages that follow "
+                "the order of topics in the video script. Each item represents one visual "
+                "moment from the script."
+            )
+            constraint_1 = "Return only a JSON array of search packages (see shape below)."
+            output_example = json.dumps(
+                [
+                    {
+                        "term": "opening visual topic",
+                        "weight": 1.0,
+                        "visual_intent": "Introduz o tema abrindo com o primeiro momento visual do roteiro.",
+                        "alternatives": ["opening scene alt", "intro visual alt"],
+                        "required_concepts": ["opening", "visual", "topic"],
+                        "optional_concepts": ["context"],
+                    },
+                    {
+                        "term": "middle script visual topic",
+                        "weight": 0.85,
+                        "visual_intent": "Sustenta a narrativa no meio do roteiro com o momento visual correspondente.",
+                        "alternatives": ["middle scene alt", "supporting visual alt"],
+                        "required_concepts": ["middle", "script", "visual"],
+                        "optional_concepts": ["topic"],
+                    },
+                    {
+                        "term": "final visual topic",
+                        "weight": 0.7,
+                        "visual_intent": "Encerra o roteiro com o momento visual final.",
+                        "alternatives": ["closing scene alt", "final visual alt"],
+                        "required_concepts": ["final", "visual", "topic"],
+                        "optional_concepts": ["closing"],
+                    },
+                ][:amount],
+                ensure_ascii=False,
+            )
+        else:
+            goal = (
+                f"Generate {amount} chronological stock-video search terms that follow "
+                "the order of topics in the video script."
+            )
+            constraint_1 = "Return only a JSON array of objects with `term` and `weight`."
+            output_example = json.dumps(
+                [
+                    {"term": "opening visual topic", "weight": 1.0},
+                    {"term": "middle script visual topic", "weight": 0.85},
+                    {"term": "final visual topic", "weight": 0.7},
+                ][:amount],
+                ensure_ascii=False,
+            )
         ordering_rule = (
-            "Keep the terms in the same order as the script narration; "
-            "earlier terms must describe earlier visual moments."
-        )
-        output_example = json.dumps(
-            [
-                {"term": "opening visual topic", "weight": 1.0},
-                {"term": "middle script visual topic", "weight": 0.85},
-                {"term": "final visual topic", "weight": 0.7},
-            ][:amount],
-            ensure_ascii=False,
+            "Keep the items in the same order as the script narration; "
+            "earlier items must describe earlier visual moments."
         )
         prompt = f"""
 # Role: Video Search Terms Generator
@@ -1233,13 +1368,13 @@ def generate_terms(
 {goal}
 
 ## Constraints:
-1. Return only a JSON array of objects with `term` and `weight`.
+1. {constraint_1}
 2. Each search term should consist of 1-5 words and include the main subject when relevant.
 3. Do not return anything else besides the JSON array.
 4. The search terms must be related to the subject of the video.
 5. {ordering_rule}
 
-{_WEIGHTED_TERMS_OUTPUT_RULES}
+{output_rules}
 
 ## Output Example:
 {output_example}
@@ -1336,7 +1471,7 @@ Avoid symbolic representations unless explicitly mentioned in the script.
 - Temple spirituality
 - Nature sounds
 
-{_WEIGHTED_TERMS_OUTPUT_RULES}
+{output_rules}
 
 # Context
 
@@ -1348,17 +1483,11 @@ Avoid symbolic representations unless explicitly mentioned in the script.
 
 # Output Example
 
-[
-  {{ "term": "Tokyo street", "weight": 1.0 }},
-  {{ "term": "Japan train station", "weight": 0.85 }},
-  {{ "term": "Japanese neighborhood", "weight": 0.75 }},
-  {{ "term": "People using vending machines", "weight": 0.65 }},
-  {{ "term": "Japanese countryside", "weight": 0.5 }}
-]
+{_DEFAULT_OUTPUT_EXAMPLE if mode == "visual_package" else _DEFAULT_SIMPLE_OUTPUT_EXAMPLE}
 """.strip()
 
     logger.info(
-        f"subject: {video_subject}, match_script_order: {match_script_order}"
+        f"subject: {video_subject}, match_script_order: {match_script_order}, terms_output_mode: {mode}"
     )
 
     search_terms: NormalizedCollectorKeywords | None = None

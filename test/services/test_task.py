@@ -81,13 +81,8 @@ class TestTaskService(unittest.TestCase):
         with patch.object(tm.llm, "generate_terms", return_value=weighted) as generate:
             result = tm.generate_terms("task-id", params, "先城市，再地铁")
 
-        self.assertEqual(
-            result,
-            [
-                {"term": "city", "weight": 1.0},
-                {"term": "train", "weight": 0.8},
-            ],
-        )
+        self.assertEqual([r["term"] for r in result], ["city", "train"])
+        self.assertEqual([r["weight"] for r in result], [1.0, 0.8])
         generate.assert_called_once_with(
             video_subject="城市通勤",
             video_script="先城市，再地铁",
@@ -113,13 +108,49 @@ class TestTaskService(unittest.TestCase):
         rerank.assert_called_once_with(
             "Tokyo nightlife", ["tokyo street", "japan train"]
         )
-        self.assertEqual(
-            result,
-            [
-                {"term": "japan train", "weight": 1.0},
-                {"term": "tokyo street", "weight": 1.0},
+        self.assertEqual([r["term"] for r in result], ["japan train", "tokyo street"])
+        self.assertEqual([r["weight"] for r in result], [1.0, 1.0])
+        # Compat-filled required_concepts survive the rerank rebuild.
+        self.assertEqual(result[0]["required_concepts"], ["japan", "train"])
+        self.assertEqual(result[1]["required_concepts"], ["tokyo", "street"])
+
+    def test_generate_terms_rerank_preserves_visual_package_fields(self):
+        """The rerank rebuild must merge by term dict, not reconstruct with
+        only weight — otherwise visual_intent/alternatives/concepts get lost."""
+        params = VideoParams(
+            video_subject="Tokyo nightlife",
+            video_script="",
+            match_materials_to_script=False,
+            video_terms=[
+                {
+                    "term": "tokyo street",
+                    "visual_intent": "Mostra a rua principal.",
+                    "alternatives": ["Tokyo city street"],
+                    "required_concepts": ["Tokyo", "street"],
+                    "optional_concepts": ["urban"],
+                },
+                {
+                    "term": "japan train",
+                    "visual_intent": "Mostra o trem japonês.",
+                    "alternatives": ["Japanese train"],
+                    "required_concepts": ["Japan", "train"],
+                    "optional_concepts": ["commuters"],
+                },
             ],
         )
+
+        with patch.object(
+            tm.twelvelabs,
+            "rerank_terms_by_subject",
+            return_value=["japan train", "tokyo street"],
+        ):
+            result = tm.generate_terms("task-id", params, "script")
+
+        self.assertEqual([r["term"] for r in result], ["japan train", "tokyo street"])
+        self.assertEqual(result[0]["visual_intent"], "Mostra o trem japonês.")
+        self.assertEqual(result[0]["alternatives"], ["Japanese train"])
+        self.assertEqual(result[0]["optional_concepts"], ["commuters"])
+        self.assertEqual(result[1]["visual_intent"], "Mostra a rua principal.")
 
     def test_generate_terms_skips_rerank_when_weights_are_explicit(self):
         params = VideoParams(
@@ -138,7 +169,8 @@ class TestTaskService(unittest.TestCase):
             result = tm.generate_terms("task-id", params, "script")
 
         rerank.assert_not_called()
-        self.assertEqual(result, [{"term": "tokyo street", "weight": 1.0}])
+        self.assertEqual([r["term"] for r in result], ["tokyo street"])
+        self.assertEqual(result[0]["weight"], 1.0)
 
     def test_get_video_materials_records_structured_collector_error(self):
         params = VideoParams(
