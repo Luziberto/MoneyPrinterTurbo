@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { videosApi } from '../../api/videos'
 import { ApiError } from '../../api/client'
 import { btnPrimaryClass } from '../../lib/cockpit-ui'
+import { useWizardNavigation } from '../../composables/useWizardNavigation'
 
 const workspaceStore = useWorkspaceStore()
-const router = useRouter()
+const navigate = useWizardNavigation()
 const submitting = ref(false)
 const errorMessage = ref<string | null>(null)
 
@@ -20,7 +20,7 @@ async function submitRender(force = false) {
   try {
     await videosApi.render(workspaceStore.channelSlug, force)
     await workspaceStore.load(workspaceStore.channelSlug)
-    router.push('/criar/result')
+    navigate('result')
   } catch (err) {
     errorMessage.value = err instanceof ApiError ? err.message : String(err)
   } finally {

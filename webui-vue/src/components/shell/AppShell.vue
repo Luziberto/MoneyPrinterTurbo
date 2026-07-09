@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import AppHeader from './AppHeader.vue'
-import CockpitDashboard from './CockpitDashboard.vue'
-import TabNav from './TabNav.vue'
+import CompactHeader from './CompactHeader.vue'
+import ProviderGrid from './ProviderGrid.vue'
 import { useChannelsStore } from '../../stores/channels'
 import { useDashboardStore } from '../../stores/dashboard'
 import { useUiStore } from '../../stores/ui'
 import { useWorkspaceStore } from '../../stores/workspace'
+
+const route = useRoute()
+const isDashboard = computed(() => route.path === '/')
 
 const uiStore = useUiStore()
 const channelsStore = useChannelsStore()
@@ -41,9 +45,13 @@ watch(
 
 <template>
   <div class="flex min-h-screen flex-col bg-cockpit-bg light:bg-cockpit-bg">
-    <AppHeader />
-    <CockpitDashboard />
-    <TabNav />
+    <template v-if="isDashboard">
+      <AppHeader />
+      <section class="px-5 py-3">
+        <ProviderGrid />
+      </section>
+    </template>
+    <CompactHeader v-else />
     <main class="flex-1 px-5 pt-2 pb-4">
       <RouterView />
     </main>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import WizardShell from '../components/wizard/WizardShell.vue'
 import StepScript from '../components/wizard/StepScript.vue'
 import StepCollector from '../components/wizard/StepCollector.vue'
@@ -7,8 +7,13 @@ import StepPreview from '../components/wizard/StepPreview.vue'
 import StepRender from '../components/wizard/StepRender.vue'
 import StepResult from '../components/wizard/StepResult.vue'
 import StepPublish from '../components/wizard/StepPublish.vue'
+import { provideWizardNavigation } from '../composables/useWizardNavigation'
+import type { StepId } from '../types/workspace'
 
-const props = defineProps<{ step: string }>()
+const activeStep = ref<StepId>('script')
+provideWizardNavigation((stepId) => {
+  activeStep.value = stepId
+})
 
 const stepComponents: Record<string, unknown> = {
   script: StepScript,
@@ -19,11 +24,15 @@ const stepComponents: Record<string, unknown> = {
   publish: StepPublish,
 }
 
-const activeComponent = computed(() => stepComponents[props.step] ?? StepScript)
+const activeComponent = computed(() => stepComponents[activeStep.value] ?? StepScript)
+
+function onNavigate(stepId: string) {
+  activeStep.value = stepId as StepId
+}
 </script>
 
 <template>
-  <WizardShell :active-step="step">
+  <WizardShell :active-step="activeStep" @navigate="onNavigate">
     <component :is="activeComponent" />
   </WizardShell>
 </template>

@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ensureAutoScriptReady, scriptStepBusy, scriptStepError } from '../../composables/useScriptStep'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { STEP_IDS } from '../../types/workspace'
 
 const props = defineProps<{ activeStep: string }>()
+const emit = defineEmits<{ navigate: [stepId: string] }>()
 
-const router = useRouter()
 const workspaceStore = useWorkspaceStore()
 const leavingScript = ref(false)
 
@@ -36,7 +35,7 @@ async function goTo(stepId: string) {
     leavingScript.value = false
     if (!ok) return
   }
-  await router.push(`/criar/${stepId}`)
+  emit('navigate', stepId)
 }
 
 function stepClass(step: { id: string; state: string }) {
