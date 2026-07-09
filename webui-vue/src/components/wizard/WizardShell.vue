@@ -16,7 +16,6 @@ const stepLabels: Record<string, string> = {
   preview: 'Preview',
   render: 'Render',
   result: 'Resultado',
-  publish: 'Publicar',
 }
 
 const steps = computed(() =>

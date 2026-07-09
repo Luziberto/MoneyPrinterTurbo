@@ -164,7 +164,6 @@ export const STEP_IDS = [
   'preview',
   'render',
   'result',
-  'publish',
 ] as const
 
 export type StepId = (typeof STEP_IDS)[number]

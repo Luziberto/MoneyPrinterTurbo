@@ -6,7 +6,6 @@ import StepCollector from '../components/wizard/StepCollector.vue'
 import StepPreview from '../components/wizard/StepPreview.vue'
 import StepRender from '../components/wizard/StepRender.vue'
 import StepResult from '../components/wizard/StepResult.vue'
-import StepPublish from '../components/wizard/StepPublish.vue'
 import { provideWizardNavigation } from '../composables/useWizardNavigation'
 import type { StepId } from '../types/workspace'
 
@@ -21,7 +20,6 @@ const stepComponents: Record<string, unknown> = {
   preview: StepPreview,
   render: StepRender,
   result: StepResult,
-  publish: StepPublish,
 }
 
 const activeComponent = computed(() => stepComponents[activeStep.value] ?? StepScript)

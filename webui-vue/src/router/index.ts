@@ -12,14 +12,12 @@ const router = createRouter({
     {
       path: '/videos',
       name: 'videos',
-      component: () => import('../views/ComingSoonView.vue'),
-      props: { titleKey: 'Cockpit Tab Videos' },
+      component: () => import('../views/VideosView.vue'),
     },
     {
       path: '/videos/:id',
       name: 'video-detail',
-      component: () => import('../views/ComingSoonView.vue'),
-      props: { titleKey: 'Cockpit Tab Videos' },
+      component: () => import('../views/VideoDetailView.vue'),
     },
     { path: '/tarefas', name: 'tarefas', component: () => import('../views/TarefasView.vue') },
     {
