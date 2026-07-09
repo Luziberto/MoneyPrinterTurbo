@@ -195,6 +195,28 @@ docker exec -it moneyprinterturbo-api python3 pipeline/orchestrator.py --channel
 0 8,14,20 * * * docker exec moneyprinterturbo-api python3 /MoneyPrinterTurbo/pipeline/orchestrator.py --channel japao >> /var/log/mpt-pipeline.log 2>&1
 ```
 
+## Cron da Video Library (publicações agendadas)
+
+A tela "Vídeos" do cockpit (`webui-vue`) permite agendar uma publicação para
+mais tarde (`POST /api/v1/video-library/{id}/schedule`). Isso só cria a
+linha em `video_publications` com `status='scheduled'` — nada publica
+sozinho sem o scanner de agendamentos rodando. Assim como o orchestrator
+acima, não há scheduler em processo (sem APScheduler/Celery): é um script
+disparado via cron, `app/scripts/run_due_publications.py`.
+
+Roda **a cada minuto**, não a cada hora — a varredura é uma única query
+SQLite indexada (`status='scheduled' AND scheduled_at <= now`), então o
+custo de rodar 60x/hora é desprezível, e evita um atraso de até ~59 minutos
+numa publicação agendada:
+
+```cron
+* * * * * docker exec moneyprinterturbo-api python3 /MoneyPrinterTurbo/app/scripts/run_due_publications.py >> /var/log/mpt-schedule.log 2>&1
+```
+
+Também dá para disparar manualmente (fora do Docker, por exemplo) com
+`python3 app/scripts/run_due_publications.py` a partir da raiz do repo, ou
+via `POST /api/v1/video-library/run-due-publications`.
+
 ## Ciclo de vida do tema
 
 | Status | Significado |
